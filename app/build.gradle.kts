@@ -7,14 +7,29 @@ android {
     namespace = "com.kafkasl.phonewhisper"
     compileSdk = 34
 
+    signingConfigs {
+        create("codexDebug") {
+            storeFile = rootProject.file("keystores/codex-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     defaultConfig {
-        applicationId = "com.kafkasl.phonewhisper"
+        applicationId = "com.kafkasl.phonewhisper.codex"
         minSdk = 30
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.3.0"
+        versionCode = 7
+        versionName = "0.3.5-codex"
 
         ndk { abiFilters += "arm64-v8a" }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("codexDebug")
+        }
     }
 
     compileOptions {
