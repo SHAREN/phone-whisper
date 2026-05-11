@@ -50,11 +50,12 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val COLOR_IDLE = 0xDD1C1C1E.toInt()
         private const val COLOR_RECORDING = 0xDDEF4444.toInt()
         private const val COLOR_BUSY = 0xDD6B6B6B.toInt()
+        private const val COLOR_RETRY = 0xDDF59E0B.toInt()
         private const val COLOR_FEEDBACK_BG = 0xEE1C1C1E.toInt()
         private const val COLOR_RING = 0xFFE8EAED.toInt()
     }
 
-    private enum class State { IDLE, RECORDING, TRANSCRIBING }
+    private enum class State { IDLE, RECORDING, TRANSCRIBING, RETRY_READY }
 
     private var state = State.IDLE
     private var overlayView: FrameLayout? = null
@@ -66,6 +67,8 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var feedbackLayoutParams: WindowManager.LayoutParams? = null
     private var audioRecord: AudioRecord? = null
     private var pcmStream: ByteArrayOutputStream? = null
+    private var retryPcm: ByteArray? = null
+    private var retryReason: String? = null
     private var activeTraceId: String = ""
     private var recordingStartedAtMs: Long = 0L
     private val handler = Handler(Looper.getMainLooper())
@@ -261,6 +264,10 @@ class WhisperAccessibilityService : AccessibilityService() {
         equalizerView = null
         layoutParams = null
         feedbackLayoutParams = null
+        if (state == State.RETRY_READY) {
+            clearRetry()
+            state = State.IDLE
+        }
     }
 
     private fun circle(color: Int) = GradientDrawable().apply {
@@ -279,6 +286,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 State.IDLE -> showIdleVisual()
                 State.RECORDING -> showRecordingVisual()
                 State.TRANSCRIBING -> showBusyVisual()
+                State.RETRY_READY -> showRetryVisual()
             }
         }
     }
@@ -310,6 +318,17 @@ class WhisperAccessibilityService : AccessibilityService() {
         button?.scaleX = 1f
         button?.scaleY = 1f
         spinner?.visibility = View.VISIBLE
+    }
+
+    private fun showRetryVisual() {
+        equalizerView?.visibility = View.GONE
+        equalizerView?.reset()
+        spinner?.visibility = View.GONE
+        button?.setImageResource(R.drawable.ic_retry)
+        button?.background = circle(COLOR_RETRY)
+        button?.scaleX = 1f
+        button?.scaleY = 1f
+        button?.alpha = 1f
     }
 
     private fun positionFeedback(
@@ -397,10 +416,12 @@ class WhisperAccessibilityService : AccessibilityService() {
             State.IDLE -> startRecording()
             State.RECORDING -> stopAndTranscribe()
             State.TRANSCRIBING -> {}
+            State.RETRY_READY -> retryLastRecording()
         }
     }
 
     private fun startRecording() {
+        clearRetry()
         val traceId = newTraceId()
         activeTraceId = traceId
         trace(traceId, "record_start_requested")
@@ -495,9 +516,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 trace(traceId, "local_transcribe_failed", e.message ?: "unknown")
                 Log.e(TAG, "trace=$traceId Local transcription failed", e)
                 handler.post {
-                    toast("Local error: ${e.message}")
-                    state = State.IDLE
-                    applyVisualState()
+                    enterRetry(pcm, ErrorMessages.local(e.message), traceId)
                 }
             }
         }
@@ -523,9 +542,9 @@ class WhisperAccessibilityService : AccessibilityService() {
                 handleTranscriptionResult(result.text, traceId)
             } else {
                 handler.post {
-                    toast("Error: ${result.error ?: "empty transcript"}")
-                    state = State.IDLE
-                    applyVisualState()
+                    val message = ErrorMessages.transcription(result.error, result.statusCode)
+                    trace(traceId, "api_transcribe_failed_user_message", message)
+                    enterRetry(pcm, message, traceId)
                 }
             }
         }
@@ -548,6 +567,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         pcmStream = null
         recordingStartedAtMs = 0L
         stopPulse()
+        clearRetry()
         removeOverlay()
         showOverlay()
     }
@@ -563,6 +583,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             return
         }
 
+        clearRetry()
         val usePostProcessing = prefs().getBoolean("use_post_processing", false)
         val apiKey = prefs().getString("api_key", "") ?: ""
 
@@ -607,6 +628,43 @@ class WhisperAccessibilityService : AccessibilityService() {
         toast(msg)
         state = State.IDLE
         applyVisualState()
+    }
+
+    private fun enterRetry(pcm: ByteArray, message: String, traceId: String) {
+        retryPcm = pcm
+        retryReason = message
+        state = State.RETRY_READY
+        applyVisualState()
+        showFeedback("$message. Tap retry", 3500)
+        trace(traceId, "retry_ready", "pcmBytes=${pcm.size} reason=$message")
+    }
+
+    private fun retryLastRecording() {
+        val pcm = retryPcm
+        if (pcm == null || pcm.isEmpty()) {
+            reset("Nothing to retry")
+            return
+        }
+
+        val traceId = newTraceId()
+        activeTraceId = traceId
+        state = State.TRANSCRIBING
+        applyVisualState()
+        showFeedback("Retrying...", 1200)
+        trace(traceId, "retry_start", "pcmBytes=${pcm.size} previousReason=${retryReason.orEmpty()}")
+
+        val useLocal = prefs().getBoolean("use_local", true)
+        val local = localTranscriber
+        if (useLocal && local != null) {
+            transcribeLocal(pcm, local, traceId)
+        } else {
+            transcribeApi(pcm, traceId)
+        }
+    }
+
+    private fun clearRetry() {
+        retryPcm = null
+        retryReason = null
     }
 
     // --- Text injection ---

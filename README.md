@@ -128,8 +128,11 @@ The floating button has three active visual states:
 - **Idle**: microphone icon, ready to record.
 - **Recording**: microphone icon is replaced by a three-bar equalizer, and the button itself scales with microphone volume.
 - **Transcribing**: microphone icon is hidden and a small loader spins inside the button.
+- **Retry**: retry icon appears after a transcription/network/server failure while the overlay is still visible.
 
 If the screen is turned off during recording, the recording is cancelled immediately. The captured audio is discarded and is not sent for transcription.
+
+The retry state keeps the last captured audio only in memory and only while the overlay remains visible. If the overlay is removed, the retry audio is discarded so the next recording starts fresh.
 
 ## Why does it need Accessibility?
 
@@ -204,6 +207,8 @@ Useful stages include:
 - `inject_start`
 - `inject_action_set_text`
 - `inject_end`
+- `retry_ready`
+- `retry_start`
 
 For a custom bridge, compare Android `trace=<id>` timestamps with the bridge request logs. A server-side `401` with `hasAuthorizationHeader=false` means the incoming request reached the bridge without an `Authorization` header.
 

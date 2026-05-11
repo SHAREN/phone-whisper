@@ -186,3 +186,37 @@ Expected results:
 
 Rollback/cleanup notes:
 - Reinstall the previous APK if the simpler microphone/pulse recording state is desired.
+
+## Retry Failed Transcription With Readable Errors
+
+Feature/change name: Retry failed transcription and short user-facing error messages.
+
+Prerequisites/setup:
+- `Phone Whisper` installed from the current debug APK.
+- Accessibility service and audio permission enabled.
+- Cloud transcription enabled.
+- A target app with an editable field focused so the overlay is visible.
+- For failure testing, temporarily use an invalid transcription URL, invalid bearer token, or disable network.
+
+Step-by-step actions:
+1. Set a failing transcription endpoint or token.
+2. Tap the microphone, record a short phrase, then tap again to stop.
+3. Confirm a readable error feedback appears and the button changes to a retry icon.
+4. Restore the valid endpoint/token or network while keeping the overlay visible.
+5. Tap the retry icon.
+6. Confirm the same captured audio is submitted again and inserted if transcription succeeds.
+7. Trigger another failure, then remove the overlay or leave the input context.
+8. Show the overlay again and confirm it starts as the normal microphone button rather than retry.
+9. Repeat in both light theme and dark theme.
+
+Expected results:
+- Common failures show readable feedback such as `Network error`, `Wrong transcription token`, or `Transcription server error`.
+- Failed transcription keeps the last audio available behind a retry button while the overlay stays visible.
+- Tapping retry resubmits the saved audio without re-recording.
+- Removing the overlay clears retry state and discards the saved audio.
+- Light theme result: retry icon and feedback text are visible.
+- Dark theme result: retry icon and feedback text are visible.
+
+Rollback/cleanup notes:
+- Restore the normal transcription URL and token after failure testing.
+- Reinstall the previous APK if retry behavior is not desired.
