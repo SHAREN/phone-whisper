@@ -121,6 +121,17 @@ The app treats an editable field whose visible text equals its hint text as empt
 
 Successful direct insertion does not show an `Inserted` overlay. The app only shows feedback for explicit clipboard copy, insertion failure, or cleanup fallback.
 
+### Overlay states
+
+The floating button has four transient states:
+
+- **Idle**: microphone icon, ready to record.
+- **Recording**: microphone icon is replaced by a three-bar equalizer, and a large voice-reactive ring follows microphone volume.
+- **Transcribing**: microphone icon is hidden and a small loader spins inside the button.
+- **Retry**: retry icon appears after a transcription/network/server failure while the overlay is still visible.
+
+The retry state keeps the last captured audio only in memory and only while the overlay remains visible. If the keyboard is hidden and the floating button disappears, the retry audio is discarded so the next overlay starts as a normal new recording.
+
 ## Why does it need Accessibility?
 
 Phone Whisper uses Android Accessibility Service for one narrow reason: to insert dictated text into the currently focused text field across apps.
@@ -194,6 +205,8 @@ Useful stages include:
 - `inject_start`
 - `inject_action_set_text`
 - `inject_end`
+- `retry_ready`
+- `retry_start`
 
 For a custom bridge, compare Android `trace=<id>` timestamps with the bridge request logs. A server-side `401` with `hasAuthorizationHeader=false` means the incoming request reached the bridge without an `Authorization` header.
 

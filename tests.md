@@ -180,3 +180,44 @@ Expected results:
 Rollback/cleanup notes:
 - Reinstall the previous APK if a specific web editor requires the older direct text behavior.
 - Turn `Copy transcript to clipboard` on if a site works better with paste actions.
+
+## Voice-Reactive Overlay And Retry
+
+Feature/change name: Voice-reactive recording animation, in-button loader, and transient retry.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` installed from the current debug APK.
+- Accessibility service and audio permission enabled.
+- A target app with an editable field focused so the overlay is visible.
+- Cloud transcription configured for normal success testing.
+- For retry testing, temporarily use an invalid transcription URL or disable network.
+
+Step-by-step actions:
+1. Focus a text field and confirm the idle microphone button appears.
+2. Tap the microphone and speak at different volumes.
+3. Confirm the recording ring grows/shrinks strongly with voice volume.
+4. Confirm the microphone icon is hidden during recording and a three-bar equalizer is shown instead.
+5. Tap again to stop recording.
+6. Confirm the microphone icon disappears and a loader spins inside the button during transcription.
+7. Restore a valid transcription endpoint and confirm successful text insertion returns the button to idle.
+8. Set an invalid transcription URL or disable network.
+9. Record and stop again.
+10. Confirm a readable error feedback appears and the button changes to a retry icon.
+11. Restore network/endpoint while keeping the overlay visible, then tap retry.
+12. Hide the keyboard while retry is visible, then show the keyboard again.
+13. Repeat visual checks in both light theme and dark theme.
+
+Expected results:
+- Recording animation reacts strongly to microphone input level.
+- The recording icon is a three-bar equalizer whose bars move in a quick delayed wave from left to right.
+- Transcribing state shows only the in-button loader, not the microphone icon.
+- Failed transcription keeps the last audio available behind a retry button while the overlay stays visible.
+- Tapping retry resubmits the saved audio without re-recording.
+- Hiding the keyboard removes the overlay and clears retry state; showing it again displays the normal microphone.
+- Common errors show readable feedback such as `Network error`, `Wrong transcription token`, or `Transcription server error`.
+- Light theme result: all overlay states are visible and readable.
+- Dark theme result: all overlay states are visible and readable.
+
+Rollback/cleanup notes:
+- Restore the normal transcription URL and token after failure testing.
+- Reinstall the previous APK if retry behavior is not desired.
