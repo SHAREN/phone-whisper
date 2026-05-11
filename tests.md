@@ -195,7 +195,7 @@ Prerequisites/setup:
 Step-by-step actions:
 1. Focus a text field and confirm the idle microphone button appears.
 2. Tap the microphone and speak at different volumes.
-3. Confirm the recording ring grows/shrinks strongly with voice volume.
+3. Confirm there are no rings around or inside the button, and the button itself grows/shrinks strongly with voice volume.
 4. Confirm the microphone icon is hidden during recording and a three-bar equalizer is shown instead.
 5. Tap again to stop recording.
 6. Confirm the microphone icon disappears and a loader spins inside the button during transcription.
@@ -205,11 +205,15 @@ Step-by-step actions:
 10. Confirm a readable error feedback appears and the button changes to a retry icon.
 11. Restore network/endpoint while keeping the overlay visible, then tap retry.
 12. Hide the keyboard while retry is visible, then show the keyboard again.
-13. Repeat visual checks in both light theme and dark theme.
+13. Start recording again, then turn the screen off with the power button.
+14. Turn the screen back on and confirm the overlay is gone and no transcription was sent.
+15. Repeat visual checks in both light theme and dark theme.
 
 Expected results:
 - Recording animation reacts strongly to microphone input level, with the button itself scaling about five times more than the initial voice-reactive version.
+- No circular ring animation is drawn around or inside the recording button.
 - The recording icon is a three-bar equalizer whose bars move in a quick delayed wave from left to right.
+- Turning the screen off during recording cancels the recording, discards captured audio, and does not submit transcription.
 - Transcribing state shows only the in-button loader, not the microphone icon.
 - Failed transcription keeps the last audio available behind a retry button while the overlay stays visible.
 - Tapping retry resubmits the saved audio without re-recording.

@@ -2,9 +2,12 @@ package com.kafkasl.phonewhisper
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -62,7 +65,6 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var overlayView: FrameLayout? = null
     private var button: ImageView? = null
     private var spinner: ProgressBar? = null
-    private var levelView: AudioLevelView? = null
     private var equalizerView: EqualizerView? = null
     private var feedbackView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
@@ -86,6 +88,14 @@ class WhisperAccessibilityService : AccessibilityService() {
             feedbackView?.visibility = View.GONE
         }?.start()
     }
+    private var screenReceiverRegistered = false
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                cancelRecording("screen_off")
+            }
+        }
+    }
 
     // Local transcription engine (loaded lazily)
     private var localTranscriber: LocalTranscriber? = null
@@ -97,6 +107,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         instance = this
         enableInteractiveWindowEvents()
+        registerScreenReceiver()
         handler.removeCallbacks(pollOverlayVisibility)
         handler.post(pollOverlayVisibility)
         scheduleOverlayVisibilityRefresh(0)
@@ -113,6 +124,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         instance = null
         handler.removeCallbacks(refreshOverlayVisibility)
         handler.removeCallbacks(pollOverlayVisibility)
+        unregisterScreenReceiver()
+        cancelRecording("service_destroy")
         removeOverlay()
         super.onDestroy()
     }
@@ -199,10 +212,6 @@ class WhisperAccessibilityService : AccessibilityService() {
         val margin = (MARGIN_DP * dp).toInt()
         val edgeOffset = (ringSize - buttonSize) / 2
 
-        val level = AudioLevelView(this).apply {
-            visibility = View.GONE
-        }
-
         val busySpinner = ProgressBar(this).apply {
             isIndeterminate = true
             indeterminateTintList = ColorStateList.valueOf(COLOR_RING)
@@ -221,7 +230,6 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         val overlay = FrameLayout(this).apply {
-            addView(level, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER))
             addView(img, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.CENTER))
             addView(equalizer, FrameLayout.LayoutParams((26 * dp).toInt(), (26 * dp).toInt(), Gravity.CENTER))
             addView(busySpinner, FrameLayout.LayoutParams((26 * dp).toInt(), (26 * dp).toInt(), Gravity.CENTER))
@@ -302,7 +310,6 @@ class WhisperAccessibilityService : AccessibilityService() {
         overlayView = overlay
         button = img
         spinner = busySpinner
-        levelView = level
         equalizerView = equalizer
         feedbackView = feedback
         layoutParams = params
@@ -322,7 +329,6 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         button = null
         spinner = null
-        levelView = null
         equalizerView = null
         layoutParams = null
         feedbackLayoutParams = null
@@ -354,8 +360,6 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showIdleVisual() {
-        levelView?.visibility = View.GONE
-        levelView?.reset()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
         spinner?.visibility = View.GONE
@@ -368,7 +372,6 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun showRecordingVisual() {
         spinner?.visibility = View.GONE
-        levelView?.visibility = View.VISIBLE
         equalizerView?.visibility = View.VISIBLE
         button?.setImageDrawable(null)
         button?.background = circle(COLOR_RECORDING)
@@ -376,8 +379,6 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showBusyVisual() {
-        levelView?.visibility = View.GONE
-        levelView?.reset()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
         button?.setImageDrawable(null)
@@ -388,8 +389,6 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showRetryVisual() {
-        levelView?.visibility = View.GONE
-        levelView?.reset()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
         spinner?.visibility = View.GONE
@@ -453,13 +452,29 @@ class WhisperAccessibilityService : AccessibilityService() {
         val level = ((rms * 8.5).coerceIn(0.02, 1.0)).toFloat()
         handler.post {
             if (state == State.RECORDING) {
-                levelView?.setLevel(level)
                 equalizerView?.setLevel(level)
                 val scale = 1f + level * 1.40f
                 button?.scaleX = scale
                 button?.scaleY = scale
             }
         }
+    }
+
+    private fun registerScreenReceiver() {
+        if (!screenReceiverRegistered) {
+            registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
+            screenReceiverRegistered = true
+        }
+    }
+
+    private fun unregisterScreenReceiver() {
+        if (!screenReceiverRegistered) return
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (_: IllegalArgumentException) {
+            // Receiver can already be gone if Android tears down the service process.
+        }
+        screenReceiverRegistered = false
     }
 
     // --- State machine ---
@@ -546,6 +561,28 @@ class WhisperAccessibilityService : AccessibilityService() {
         } else {
             transcribeApi(pcm, traceId)
         }
+    }
+
+    private fun cancelRecording(reason: String) {
+        if (state != State.RECORDING) return
+
+        val traceId = activeTraceId.ifBlank { newTraceId().also { activeTraceId = it } }
+        val recordDurationMs = if (recordingStartedAtMs > 0) SystemClock.elapsedRealtime() - recordingStartedAtMs else 0L
+        trace(traceId, "record_cancelled", "reason=$reason recordDurationMs=$recordDurationMs")
+
+        state = State.IDLE
+        try {
+            audioRecord?.stop()
+        } catch (_: IllegalStateException) {
+        }
+        audioRecord?.release()
+        audioRecord = null
+        pcmStream = null
+        recordingStartedAtMs = 0L
+        stopPulse()
+        clearRetry()
+        removeOverlay()
+        scheduleOverlayVisibilityRefresh(0)
     }
 
     private fun transcribeLocal(pcm: ByteArray, transcriber: LocalTranscriber, traceId: String) {

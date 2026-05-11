@@ -126,11 +126,13 @@ Successful direct insertion does not show an `Inserted` overlay. The app only sh
 The floating button has four transient states:
 
 - **Idle**: microphone icon, ready to record.
-- **Recording**: microphone icon is replaced by a three-bar equalizer, and a large voice-reactive ring follows microphone volume.
+- **Recording**: microphone icon is replaced by a three-bar equalizer, and the button itself scales with microphone volume.
 - **Transcribing**: microphone icon is hidden and a small loader spins inside the button.
 - **Retry**: retry icon appears after a transcription/network/server failure while the overlay is still visible.
 
 The retry state keeps the last captured audio only in memory and only while the overlay remains visible. If the keyboard is hidden and the floating button disappears, the retry audio is discarded so the next overlay starts as a normal new recording.
+
+If the screen is turned off during recording, the recording is cancelled immediately. The captured audio is discarded and is not sent for transcription.
 
 ## Why does it need Accessibility?
 
