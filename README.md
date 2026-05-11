@@ -203,6 +203,12 @@ Phone Whisper works best in apps that use standard Android text fields.
 Some apps use custom text surfaces or terminal-style views, which may not support direct accessibility paste.
 When insertion is not possible, Phone Whisper falls back to copying the transcript to the clipboard.
 
+### Web rich-text placeholders
+
+Some browser editors render placeholder text through CSS or accessibility text instead of a normal `hint`. Phone Whisper treats common focused web placeholders as empty text so they are not prepended to the transcript.
+
+Known limitation: a site may still keep its visual placeholder overlay visible after direct Accessibility insertion until the page receives a normal input event, for example when you type a character. Phone Whisper intentionally does not add and remove synthetic characters to hide that overlay because it would be a higher-risk workaround for web editors. The visual placeholder is not included in the inserted transcript.
+
 ### Termux
 
 Termux's main terminal area is not a standard Android text field, so direct insertion may not work there.
