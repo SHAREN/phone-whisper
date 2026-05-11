@@ -152,3 +152,37 @@ Expected results:
 Rollback/cleanup notes:
 - Reinstall the previous APK if a specific web editor requires the older direct text behavior.
 - Turn `Copy transcript to clipboard` on if a site works better with paste actions.
+
+## Recording Button States And Screen-Off Cancel
+
+Feature/change name: Voice-reactive recording button, in-button loader, and screen-off recording cancellation.
+
+Prerequisites/setup:
+- `Phone Whisper` installed from the current debug APK.
+- Accessibility service and audio permission enabled.
+- A target app with an editable field focused so the overlay is visible.
+- A working local or cloud transcription engine.
+
+Step-by-step actions:
+1. Focus a text field and confirm the idle microphone button appears.
+2. Tap the microphone and speak at different volumes.
+3. Confirm there are no rings around or inside the button, and the button itself grows/shrinks strongly with voice volume.
+4. Confirm the microphone icon is hidden during recording and a three-bar equalizer is shown instead.
+5. Tap again to stop recording.
+6. Confirm the microphone icon disappears and a loader spins inside the button during transcription.
+7. Confirm successful text insertion returns the button to idle.
+8. Start recording again, then turn the screen off with the power button.
+9. Turn the screen back on and confirm the recording did not submit transcription.
+10. Repeat visual checks in both light theme and dark theme.
+
+Expected results:
+- Recording animation reacts strongly to microphone input level through button scaling.
+- No circular ring animation is drawn around or inside the recording button.
+- The recording icon is a three-bar equalizer whose bars move in a quick delayed wave from left to right.
+- Transcribing state shows only the in-button loader, not the microphone icon.
+- Turning the screen off during recording cancels the recording, discards captured audio, and does not submit transcription.
+- Light theme result: all overlay states are visible and readable.
+- Dark theme result: all overlay states are visible and readable.
+
+Rollback/cleanup notes:
+- Reinstall the previous APK if the simpler microphone/pulse recording state is desired.

@@ -121,6 +121,16 @@ The app treats an editable field whose visible text equals its hint text as empt
 
 Successful direct insertion does not show an `Inserted` overlay. The app only shows feedback for explicit clipboard copy, insertion failure, or cleanup fallback.
 
+### Overlay states
+
+The floating button has three active visual states:
+
+- **Idle**: microphone icon, ready to record.
+- **Recording**: microphone icon is replaced by a three-bar equalizer, and the button itself scales with microphone volume.
+- **Transcribing**: microphone icon is hidden and a small loader spins inside the button.
+
+If the screen is turned off during recording, the recording is cancelled immediately. The captured audio is discarded and is not sent for transcription.
+
 ## Why does it need Accessibility?
 
 Phone Whisper uses Android Accessibility Service for one narrow reason: to insert dictated text into the currently focused text field across apps.
