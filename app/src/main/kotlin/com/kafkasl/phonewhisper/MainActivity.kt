@@ -143,6 +143,23 @@ class MainActivity : AppCompatActivity() {
         endpointRowSub = endpointRow.findViewWithTag("subtitle")
         root.addView(endpointRow)
 
+        val copyToClipboard = prefs().getBoolean("copy_transcript_to_clipboard", false)
+        val copySwitch = MaterialSwitch(this).apply {
+            isChecked = copyToClipboard
+            isClickable = false
+        }
+        val copyRow = settingsRow(
+            "Copy transcript to clipboard",
+            "Off: insert directly without changing clipboard",
+            copySwitch
+        ) {
+            val newVal = !copySwitch.isChecked
+            prefs().edit().putBoolean("copy_transcript_to_clipboard", newVal).apply()
+            copySwitch.isChecked = newVal
+            refresh()
+        }
+        root.addView(copyRow)
+
         setContentView(ScrollView(this).apply {
             setBackgroundColor(attrColor(android.R.attr.colorBackground))
             addView(root)
