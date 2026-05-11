@@ -455,7 +455,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             if (state == State.RECORDING) {
                 levelView?.setLevel(level)
                 equalizerView?.setLevel(level)
-                val scale = 1f + level * 0.28f
+                val scale = 1f + level * 1.40f
                 button?.scaleX = scale
                 button?.scaleY = scale
             }

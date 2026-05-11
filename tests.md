@@ -208,7 +208,7 @@ Step-by-step actions:
 13. Repeat visual checks in both light theme and dark theme.
 
 Expected results:
-- Recording animation reacts strongly to microphone input level.
+- Recording animation reacts strongly to microphone input level, with the button itself scaling about five times more than the initial voice-reactive version.
 - The recording icon is a three-bar equalizer whose bars move in a quick delayed wave from left to right.
 - Transcribing state shows only the in-button loader, not the microphone icon.
 - Failed transcription keeps the last audio available behind a retry button while the overlay stays visible.
