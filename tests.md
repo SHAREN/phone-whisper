@@ -120,3 +120,35 @@ Expected results:
 Rollback/cleanup notes:
 - Reinstall the previous APK if a target app depends on clipboard-backed paste behavior.
 - Turn `Copy transcript to clipboard` on to allow the older paste-based fallback path.
+
+## Kwork Trumbowyg Placeholder Regression
+
+Feature/change name: Web rich-text placeholder cleanup for Kwork offer description.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` installed from the current debug APK.
+- Accessibility service and audio permission enabled.
+- Cloud or local transcription working.
+- `Copy transcript to clipboard` turned off.
+- Android browser opened to `https://kwork.ru/new_offer?project=3173172`.
+- The `Описание` editor is empty and shows the placeholder text.
+
+Step-by-step actions:
+1. Focus the empty Kwork `Описание` editor.
+2. Tap the Phone Whisper floating microphone button.
+3. Record a short phrase, then tap again to stop.
+4. Inspect the inserted editor text.
+5. Open `adb logcat -v time -s PhoneWhisper`.
+6. Repeat in both light theme and dark theme.
+
+Expected results:
+- The inserted text does not include `Напишите, как вы будете решать задачу клиента`.
+- Logcat includes `stage=inject_existing_text_ignored` with a placeholder-related reason.
+- Real existing text is preserved when the cursor is inside non-placeholder content.
+- The visual CSS placeholder may remain visible until the page receives another real input event; this is accepted because the placeholder is not part of the inserted text.
+- Light theme result: the editor remains usable and the placeholder is not prepended.
+- Dark theme result: the editor remains usable and the placeholder is not prepended.
+
+Rollback/cleanup notes:
+- Reinstall the previous APK if a specific web editor requires the older direct text behavior.
+- Turn `Copy transcript to clipboard` on if a site works better with paste actions.

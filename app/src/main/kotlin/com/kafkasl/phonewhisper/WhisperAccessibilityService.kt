@@ -643,7 +643,11 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         if (node.isEditable || node.className?.toString()?.contains("EditText") == true) {
-            val current = editableText(node)
+            val resolved = editableText(node)
+            val current = resolved.text
+            resolved.ignoredReason?.let {
+                trace(traceId, "inject_existing_text_ignored", "reason=$it")
+            }
             val hasSelection = node.textSelectionStart >= 0 &&
                 node.textSelectionEnd >= 0 &&
                 node.textSelectionStart <= current.length &&
@@ -674,11 +678,17 @@ class WhisperAccessibilityService : AccessibilityService() {
             action.label?.toString()?.contains("paste", ignoreCase = true) == true
         }
 
-    private fun editableText(node: AccessibilityNodeInfo): String {
-        val raw = node.text?.toString().orEmpty()
-        val hint = node.hintText?.toString().orEmpty()
-        return if (hint.isNotBlank() && raw == hint) "" else raw
-    }
+    private fun editableText(node: AccessibilityNodeInfo): InjectionText.ResolvedText =
+        InjectionText.resolveEditableText(
+            rawText = node.text?.toString().orEmpty(),
+            hintText = node.hintText?.toString().orEmpty(),
+            contentDescription = node.contentDescription?.toString().orEmpty(),
+            className = node.className?.toString().orEmpty(),
+            packageName = node.packageName?.toString().orEmpty(),
+            isFocused = node.isFocused,
+            selectionStart = node.textSelectionStart,
+            selectionEnd = node.textSelectionEnd
+        )
 
     private fun logNode(prefix: String, node: AccessibilityNodeInfo, traceId: String) {
         val actions = node.actionList.joinToString { action ->
@@ -686,7 +696,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         Log.i(
             TAG,
-            "trace=$traceId $prefix package=${node.packageName} class=${node.className} focused=${node.isFocused} editable=${node.isEditable} text=${node.text} desc=${node.contentDescription} actions=[$actions]"
+            "trace=$traceId $prefix package=${node.packageName} class=${node.className} viewId=${node.viewIdResourceName} focused=${node.isFocused} editable=${node.isEditable} selection=${node.textSelectionStart}:${node.textSelectionEnd} text=${node.text} hint=${node.hintText} desc=${node.contentDescription} actions=[$actions]"
         )
     }
 
