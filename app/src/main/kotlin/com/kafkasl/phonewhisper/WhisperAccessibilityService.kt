@@ -298,6 +298,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         overlay.setOnTouchListener { v, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    if (!isInsideIdleButton(ev.x, ev.y, ringSize, buttonSize)) return@setOnTouchListener false
                     startX = params.x; startY = params.y
                     touchX = ev.rawX; touchY = ev.rawY
                     true
@@ -361,6 +362,14 @@ class WhisperAccessibilityService : AccessibilityService() {
         layoutParams = params
         feedbackLayoutParams = feedbackParams
         applyVisualState()
+    }
+
+    private fun isInsideIdleButton(x: Float, y: Float, overlaySize: Int, buttonSize: Int): Boolean {
+        val center = overlaySize / 2f
+        val radius = buttonSize / 2f
+        val dx = x - center
+        val dy = y - center
+        return dx * dx + dy * dy <= radius * radius
     }
 
     private fun removeOverlay() {

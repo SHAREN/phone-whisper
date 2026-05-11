@@ -69,7 +69,7 @@ Step-by-step actions:
 4. Repeat in both light theme and dark theme.
 
 Expected results:
-- The app shows the installed version as `0.3.9-codex (11)`.
+- The app shows the installed version as `0.3.10-codex (12)`.
 - Light theme result: version row is readable.
 - Dark theme result: version row is readable.
 
@@ -274,3 +274,29 @@ Expected results:
 Rollback/cleanup notes:
 - Restore the normal transcription URL and token after failure testing.
 - Reinstall the previous APK if retry behavior is not desired.
+
+## Idle Button Hitbox
+
+Feature/change name: Idle overlay hitbox matches the visible button.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` installed from the current debug APK.
+- Accessibility service enabled.
+- A target app with an editable field focused so the overlay is visible.
+
+Step-by-step actions:
+1. Focus a text field and confirm the idle microphone button appears.
+2. Tap inside the visible circular button.
+3. Tap near the button, inside the transparent overlay area but outside the visible circle.
+4. Drag starting from inside the visible circular button.
+5. Repeat in both light theme and dark theme.
+
+Expected results:
+- Tapping inside the visible idle button starts recording.
+- Tapping outside the visible idle circle does not start recording and passes through to the underlying app.
+- Dragging still works when started from the visible button.
+- Light theme result: idle hitbox matches the visible circle.
+- Dark theme result: idle hitbox matches the visible circle.
+
+Rollback/cleanup notes:
+- Reinstall the previous APK if the larger transparent drag area is preferred.
