@@ -51,6 +51,9 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val FEEDBACK_OFFSET_DP = 64
         private const val OVERLAY_REFRESH_DELAY_MS = 120L
         private const val OVERLAY_WATCHDOG_DELAY_MS = 350L
+        private const val AUDIO_UI_UPDATE_INTERVAL_MS = 50L
+        private const val RECORDING_SCALE_FACTOR = 1.40f
+        private const val RECORDING_LEVEL_SMOOTHING = 0.22f
 
         private const val COLOR_IDLE = 0xDD1C1C1E.toInt()
         private const val COLOR_RECORDING = 0xDDEF4444.toInt()
@@ -77,6 +80,9 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var activeTraceId: String = ""
     private var recordingStartedAtMs: Long = 0L
     private var lastOverlayDecision: String = ""
+    private var lastAudioUiUpdateMs: Long = 0L
+    private var targetRecordingLevel: Float = 0f
+    private var renderedRecordingLevel: Float = 0f
     private val handler = Handler(Looper.getMainLooper())
     private val refreshOverlayVisibility = Runnable { updateOverlayVisibility() }
     private val pollOverlayVisibility = object : Runnable {
@@ -89,6 +95,21 @@ class WhisperAccessibilityService : AccessibilityService() {
         feedbackView?.animate()?.alpha(0f)?.setDuration(180)?.withEndAction {
             feedbackView?.visibility = View.GONE
         }?.start()
+    }
+    private val animateRecordingLevel = object : Runnable {
+        override fun run() {
+            if (state != State.RECORDING) {
+                resetRecordingAnimation()
+                return
+            }
+
+            renderedRecordingLevel += (targetRecordingLevel - renderedRecordingLevel) * RECORDING_LEVEL_SMOOTHING
+            val scale = 1f + renderedRecordingLevel * RECORDING_SCALE_FACTOR
+            button?.scaleX = scale
+            button?.scaleY = scale
+            equalizerView?.setLevel(renderedRecordingLevel)
+            postRecordingAnimationFrame()
+        }
     }
     private var screenReceiverRegistered = false
     private val screenReceiver = object : BroadcastReceiver() {
@@ -379,6 +400,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showIdleVisual() {
+        stopRecordingAnimation()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
         spinner?.visibility = View.GONE
@@ -395,9 +417,11 @@ class WhisperAccessibilityService : AccessibilityService() {
         button?.setImageDrawable(null)
         button?.background = circle(COLOR_RECORDING)
         button?.alpha = 1f
+        startRecordingAnimation()
     }
 
     private fun showBusyVisual() {
+        stopRecordingAnimation()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
         button?.setImageDrawable(null)
@@ -408,6 +432,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showRetryVisual() {
+        stopRecordingAnimation()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
         spinner?.visibility = View.GONE
@@ -469,14 +494,38 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         val rms = kotlin.math.sqrt(sum / samples) / 32768.0
         val level = ((rms * 8.5).coerceIn(0.02, 1.0)).toFloat()
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastAudioUiUpdateMs < AUDIO_UI_UPDATE_INTERVAL_MS) return
+        lastAudioUiUpdateMs = now
         handler.post {
             if (state == State.RECORDING) {
-                equalizerView?.setLevel(level)
-                val scale = 1f + level * 1.40f
-                button?.scaleX = scale
-                button?.scaleY = scale
+                targetRecordingLevel = level
             }
         }
+    }
+
+    private fun startRecordingAnimation() {
+        handler.removeCallbacks(animateRecordingLevel)
+        postRecordingAnimationFrame()
+    }
+
+    private fun stopRecordingAnimation() {
+        handler.removeCallbacks(animateRecordingLevel)
+        resetRecordingAnimation()
+    }
+
+    private fun resetRecordingAnimation() {
+        targetRecordingLevel = 0f
+        renderedRecordingLevel = 0f
+        lastAudioUiUpdateMs = 0L
+        button?.scaleX = 1f
+        button?.scaleY = 1f
+        equalizerView?.reset()
+    }
+
+    private fun postRecordingAnimationFrame() {
+        overlayView?.postOnAnimation(animateRecordingLevel)
+            ?: handler.postDelayed(animateRecordingLevel, 16L)
     }
 
     private fun registerScreenReceiver() {

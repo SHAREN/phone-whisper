@@ -69,7 +69,7 @@ Step-by-step actions:
 4. Repeat in both light theme and dark theme.
 
 Expected results:
-- The app shows the installed version as `0.3.6-codex (8)`.
+- The app shows the installed version as `0.3.7-codex (9)`.
 - Light theme result: version row is readable.
 - Dark theme result: version row is readable.
 
@@ -259,6 +259,7 @@ Step-by-step actions:
 
 Expected results:
 - Recording animation reacts strongly to microphone input level, with the button itself scaling about five times more than the initial voice-reactive version.
+- Microphone level updates are throttled to about 20 times per second, while button scaling and equalizer movement interpolate smoothly on animation frames.
 - No circular ring animation is drawn around or inside the recording button.
 - The recording icon is a three-bar equalizer whose bars move in a quick delayed wave from left to right.
 - Turning the screen off during recording cancels the recording, discards captured audio, and does not submit transcription.
