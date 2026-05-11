@@ -12,10 +12,10 @@ import android.content.res.ColorStateList
 import android.graphics.Rect
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.hardware.display.DisplayManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -535,12 +535,10 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun resolveAudioUiUpdateIntervalNs(): Long {
-        val refreshHz = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display?.refreshRate ?: AUDIO_UI_UPDATE_FALLBACK_HZ
-        } else {
-            @Suppress("DEPRECATION")
-            (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay.refreshRate
-        }
+        val refreshHz = (getSystemService(DISPLAY_SERVICE) as? DisplayManager)
+            ?.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+            ?.refreshRate
+            ?: AUDIO_UI_UPDATE_FALLBACK_HZ
         val safeHz = refreshHz.takeIf { it.isFinite() && it >= 30f } ?: AUDIO_UI_UPDATE_FALLBACK_HZ
         Log.i(TAG, "audio_ui_update_rate refreshHz=$safeHz intervalNs=${refreshRateIntervalNs(safeHz)}")
         return refreshRateIntervalNs(safeHz)

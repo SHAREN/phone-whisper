@@ -69,7 +69,7 @@ Step-by-step actions:
 4. Repeat in both light theme and dark theme.
 
 Expected results:
-- The app shows the installed version as `0.3.8-codex (10)`.
+- The app shows the installed version as `0.3.9-codex (11)`.
 - Light theme result: version row is readable.
 - Dark theme result: version row is readable.
 
