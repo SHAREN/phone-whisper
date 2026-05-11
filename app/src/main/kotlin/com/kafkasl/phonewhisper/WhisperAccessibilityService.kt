@@ -15,6 +15,7 @@ import android.graphics.drawable.GradientDrawable
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -51,7 +52,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val FEEDBACK_OFFSET_DP = 64
         private const val OVERLAY_REFRESH_DELAY_MS = 120L
         private const val OVERLAY_WATCHDOG_DELAY_MS = 350L
-        private const val AUDIO_UI_UPDATE_INTERVAL_MS = 50L
+        private const val AUDIO_UI_UPDATE_FALLBACK_HZ = 120f
         private const val RECORDING_SCALE_FACTOR = 1.40f
         private const val RECORDING_LEVEL_SMOOTHING = 0.22f
 
@@ -61,6 +62,9 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val COLOR_RETRY = 0xDDF59E0B.toInt()
         private const val COLOR_FEEDBACK_BG = 0xEE1C1C1E.toInt()
         private const val COLOR_RING = 0xFFE8EAED.toInt()
+
+        private fun refreshRateIntervalNs(refreshHz: Float): Long =
+            (1_000_000_000L / refreshHz).toLong().coerceAtLeast(1L)
     }
 
     private enum class State { IDLE, RECORDING, TRANSCRIBING, RETRY_READY }
@@ -80,7 +84,8 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var activeTraceId: String = ""
     private var recordingStartedAtMs: Long = 0L
     private var lastOverlayDecision: String = ""
-    private var lastAudioUiUpdateMs: Long = 0L
+    private var lastAudioUiUpdateNs: Long = 0L
+    private var audioUiUpdateIntervalNs: Long = refreshRateIntervalNs(AUDIO_UI_UPDATE_FALLBACK_HZ)
     private var targetRecordingLevel: Float = 0f
     private var renderedRecordingLevel: Float = 0f
     private val handler = Handler(Looper.getMainLooper())
@@ -129,6 +134,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        audioUiUpdateIntervalNs = resolveAudioUiUpdateIntervalNs()
         enableInteractiveWindowEvents()
         registerScreenReceiver()
         handler.removeCallbacks(pollOverlayVisibility)
@@ -494,9 +500,9 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         val rms = kotlin.math.sqrt(sum / samples) / 32768.0
         val level = ((rms * 8.5).coerceIn(0.02, 1.0)).toFloat()
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastAudioUiUpdateMs < AUDIO_UI_UPDATE_INTERVAL_MS) return
-        lastAudioUiUpdateMs = now
+        val now = SystemClock.elapsedRealtimeNanos()
+        if (now - lastAudioUiUpdateNs < audioUiUpdateIntervalNs) return
+        lastAudioUiUpdateNs = now
         handler.post {
             if (state == State.RECORDING) {
                 targetRecordingLevel = level
@@ -517,7 +523,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     private fun resetRecordingAnimation() {
         targetRecordingLevel = 0f
         renderedRecordingLevel = 0f
-        lastAudioUiUpdateMs = 0L
+        lastAudioUiUpdateNs = 0L
         button?.scaleX = 1f
         button?.scaleY = 1f
         equalizerView?.reset()
@@ -526,6 +532,18 @@ class WhisperAccessibilityService : AccessibilityService() {
     private fun postRecordingAnimationFrame() {
         overlayView?.postOnAnimation(animateRecordingLevel)
             ?: handler.postDelayed(animateRecordingLevel, 16L)
+    }
+
+    private fun resolveAudioUiUpdateIntervalNs(): Long {
+        val refreshHz = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display?.refreshRate ?: AUDIO_UI_UPDATE_FALLBACK_HZ
+        } else {
+            @Suppress("DEPRECATION")
+            (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay.refreshRate
+        }
+        val safeHz = refreshHz.takeIf { it.isFinite() && it >= 30f } ?: AUDIO_UI_UPDATE_FALLBACK_HZ
+        Log.i(TAG, "audio_ui_update_rate refreshHz=$safeHz intervalNs=${refreshRateIntervalNs(safeHz)}")
+        return refreshRateIntervalNs(safeHz)
     }
 
     private fun registerScreenReceiver() {
