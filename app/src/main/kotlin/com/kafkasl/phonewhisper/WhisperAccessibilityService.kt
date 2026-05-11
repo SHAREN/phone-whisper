@@ -43,7 +43,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val PAD_DP = 10
         private const val MARGIN_DP = 8
         private const val TAP_THRESHOLD_DP = 10
-        private const val RING_DP = 56
+        private const val RING_DP = 128
         private const val FEEDBACK_OFFSET_DP = 64
         private const val OVERLAY_REFRESH_DELAY_MS = 120L
         private const val OVERLAY_WATCHDOG_DELAY_MS = 350L
@@ -51,21 +51,26 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val COLOR_IDLE = 0xDD1C1C1E.toInt()
         private const val COLOR_RECORDING = 0xDDEF4444.toInt()
         private const val COLOR_BUSY = 0xDD6B6B6B.toInt()
+        private const val COLOR_RETRY = 0xDDF59E0B.toInt()
         private const val COLOR_FEEDBACK_BG = 0xEE1C1C1E.toInt()
         private const val COLOR_RING = 0xFFE8EAED.toInt()
     }
 
-    private enum class State { IDLE, RECORDING, TRANSCRIBING }
+    private enum class State { IDLE, RECORDING, TRANSCRIBING, RETRY_READY }
 
     private var state = State.IDLE
     private var overlayView: FrameLayout? = null
     private var button: ImageView? = null
     private var spinner: ProgressBar? = null
+    private var levelView: AudioLevelView? = null
+    private var equalizerView: EqualizerView? = null
     private var feedbackView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var feedbackLayoutParams: WindowManager.LayoutParams? = null
     private var audioRecord: AudioRecord? = null
     private var pcmStream: ByteArrayOutputStream? = null
+    private var retryPcm: ByteArray? = null
+    private var retryReason: String? = null
     private var activeTraceId: String = ""
     private var recordingStartedAtMs: Long = 0L
     private val handler = Handler(Looper.getMainLooper())
@@ -154,7 +159,8 @@ class WhisperAccessibilityService : AccessibilityService() {
     private fun updateOverlayVisibility() {
         val keyboardVisible = isInputMethodVisible()
         val homeVisible = isHomeScreenForeground()
-        val shouldShow = state != State.IDLE || (keyboardVisible && !homeVisible)
+        val activeOperation = state == State.RECORDING || state == State.TRANSCRIBING
+        val shouldShow = activeOperation || (keyboardVisible && !homeVisible)
         if (shouldShow) showOverlay() else removeOverlay()
     }
 
@@ -191,10 +197,19 @@ class WhisperAccessibilityService : AccessibilityService() {
         val ringSize = (RING_DP * dp).toInt()
         val pad = (PAD_DP * dp).toInt()
         val margin = (MARGIN_DP * dp).toInt()
+        val edgeOffset = (ringSize - buttonSize) / 2
 
-        val ring = ProgressBar(this).apply {
+        val level = AudioLevelView(this).apply {
+            visibility = View.GONE
+        }
+
+        val busySpinner = ProgressBar(this).apply {
             isIndeterminate = true
             indeterminateTintList = ColorStateList.valueOf(COLOR_RING)
+            visibility = View.GONE
+        }
+
+        val equalizer = EqualizerView(this).apply {
             visibility = View.GONE
         }
 
@@ -206,8 +221,10 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         val overlay = FrameLayout(this).apply {
-            addView(ring, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER))
+            addView(level, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER))
             addView(img, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.CENTER))
+            addView(equalizer, FrameLayout.LayoutParams((26 * dp).toInt(), (26 * dp).toInt(), Gravity.CENTER))
+            addView(busySpinner, FrameLayout.LayoutParams((26 * dp).toInt(), (26 * dp).toInt(), Gravity.CENTER))
         }
 
         val params = WindowManager.LayoutParams(
@@ -217,7 +234,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = screenW - ringSize - margin
+            x = screenW - ringSize - margin + edgeOffset
             y = screenH / 2 - ringSize / 2
         }
 
@@ -247,7 +264,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                         onTap()
                     } else {
                         params.x = if (params.x + ringSize / 2 > screenW / 2)
-                            screenW - ringSize - margin else margin
+                            screenW - ringSize - margin + edgeOffset else margin
                         wm.updateViewLayout(v, params)
                         feedbackLayoutParams?.let {
                             positionFeedback(it, params)
@@ -284,10 +301,13 @@ class WhisperAccessibilityService : AccessibilityService() {
         wm.addView(feedback, feedbackParams)
         overlayView = overlay
         button = img
-        spinner = ring
+        spinner = busySpinner
+        levelView = level
+        equalizerView = equalizer
         feedbackView = feedback
         layoutParams = params
         feedbackLayoutParams = feedbackParams
+        applyVisualState()
     }
 
     private fun removeOverlay() {
@@ -302,8 +322,14 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         button = null
         spinner = null
+        levelView = null
+        equalizerView = null
         layoutParams = null
         feedbackLayoutParams = null
+        if (state == State.RETRY_READY) {
+            clearRetry()
+            state = State.IDLE
+        }
     }
 
     private fun circle(color: Int) = GradientDrawable().apply {
@@ -316,14 +342,62 @@ class WhisperAccessibilityService : AccessibilityService() {
         setColor(color)
     }
 
-    private fun setAppearance(color: Int) {
-        handler.post { button?.background = circle(color) }
+    private fun applyVisualState() {
+        handler.post {
+            when (state) {
+                State.IDLE -> showIdleVisual()
+                State.RECORDING -> showRecordingVisual()
+                State.TRANSCRIBING -> showBusyVisual()
+                State.RETRY_READY -> showRetryVisual()
+            }
+        }
     }
 
-    private fun setBusy(visible: Boolean) {
-        handler.post {
-            spinner?.visibility = if (visible) View.VISIBLE else View.GONE
-        }
+    private fun showIdleVisual() {
+        levelView?.visibility = View.GONE
+        levelView?.reset()
+        equalizerView?.visibility = View.GONE
+        equalizerView?.reset()
+        spinner?.visibility = View.GONE
+        button?.setImageResource(R.drawable.ic_mic)
+        button?.background = circle(COLOR_IDLE)
+        button?.scaleX = 1f
+        button?.scaleY = 1f
+        button?.alpha = 1f
+    }
+
+    private fun showRecordingVisual() {
+        spinner?.visibility = View.GONE
+        levelView?.visibility = View.VISIBLE
+        equalizerView?.visibility = View.VISIBLE
+        button?.setImageDrawable(null)
+        button?.background = circle(COLOR_RECORDING)
+        button?.alpha = 1f
+    }
+
+    private fun showBusyVisual() {
+        levelView?.visibility = View.GONE
+        levelView?.reset()
+        equalizerView?.visibility = View.GONE
+        equalizerView?.reset()
+        button?.setImageDrawable(null)
+        button?.background = circle(COLOR_BUSY)
+        button?.scaleX = 1f
+        button?.scaleY = 1f
+        spinner?.visibility = View.VISIBLE
+    }
+
+    private fun showRetryVisual() {
+        levelView?.visibility = View.GONE
+        levelView?.reset()
+        equalizerView?.visibility = View.GONE
+        equalizerView?.reset()
+        spinner?.visibility = View.GONE
+        button?.setImageResource(R.drawable.ic_retry)
+        button?.background = circle(COLOR_RETRY)
+        button?.scaleX = 1f
+        button?.scaleY = 1f
+        button?.alpha = 1f
     }
 
     private fun positionFeedback(
@@ -356,19 +430,36 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun startPulse() {
-        button?.let {
-            it.animate().alpha(0.4f).setDuration(500).withEndAction {
-                it.animate().alpha(1f).setDuration(500).withEndAction {
-                    if (state == State.RECORDING) startPulse()
-                }.start()
-            }.start()
-        }
-    }
-
     private fun stopPulse() {
         button?.animate()?.cancel()
         button?.alpha = 1f
+    }
+
+    private fun updateAudioLevel(buffer: ByteArray, byteCount: Int) {
+        var sum = 0.0
+        var samples = 0
+        var i = 0
+        while (i + 1 < byteCount) {
+            val lo = buffer[i].toInt() and 0xFF
+            val hi = buffer[i + 1].toInt()
+            val sample = ((hi shl 8) or lo).toShort().toInt()
+            sum += sample * sample.toDouble()
+            samples++
+            i += 2
+        }
+        if (samples == 0) return
+
+        val rms = kotlin.math.sqrt(sum / samples) / 32768.0
+        val level = ((rms * 8.5).coerceIn(0.02, 1.0)).toFloat()
+        handler.post {
+            if (state == State.RECORDING) {
+                levelView?.setLevel(level)
+                equalizerView?.setLevel(level)
+                val scale = 1f + level * 0.28f
+                button?.scaleX = scale
+                button?.scaleY = scale
+            }
+        }
     }
 
     // --- State machine ---
@@ -378,10 +469,12 @@ class WhisperAccessibilityService : AccessibilityService() {
             State.IDLE -> startRecording()
             State.RECORDING -> stopAndTranscribe()
             State.TRANSCRIBING -> {}
+            State.RETRY_READY -> retryLastRecording()
         }
     }
 
     private fun startRecording() {
+        clearRetry()
         val traceId = newTraceId()
         activeTraceId = traceId
         trace(traceId, "record_start_requested")
@@ -410,16 +503,17 @@ class WhisperAccessibilityService : AccessibilityService() {
         recordingStartedAtMs = SystemClock.elapsedRealtime()
         state = State.RECORDING
         scheduleOverlayVisibilityRefresh(0)
-        setBusy(false)
-        setAppearance(COLOR_RECORDING)
-        startPulse()
+        applyVisualState()
         trace(traceId, "record_started")
 
         thread {
             val buf = ByteArray(bufSize)
             while (state == State.RECORDING) {
                 val n = audioRecord?.read(buf, 0, buf.size) ?: break
-                if (n > 0) pcmStream?.write(buf, 0, n)
+                if (n > 0) {
+                    pcmStream?.write(buf, 0, n)
+                    updateAudioLevel(buf, n)
+                }
             }
         }
     }
@@ -431,8 +525,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         state = State.TRANSCRIBING
         scheduleOverlayVisibilityRefresh(0)
         stopPulse()
-        setAppearance(COLOR_BUSY)
-        setBusy(true)
+        applyVisualState()
 
         audioRecord?.stop()
         audioRecord?.release()
@@ -478,11 +571,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 trace(traceId, "local_transcribe_failed", e.message ?: "unknown")
                 Log.e(TAG, "trace=$traceId Local transcription failed", e)
                 handler.post {
-                    toast("Local error: ${e.message}")
-                    state = State.IDLE
-                    scheduleOverlayVisibilityRefresh(0)
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
+                    enterRetry(pcm, ErrorMessages.local(e.message), traceId)
                 }
             }
         }
@@ -508,11 +597,9 @@ class WhisperAccessibilityService : AccessibilityService() {
                 handleTranscriptionResult(result.text, traceId)
             } else {
                 handler.post {
-                    toast("Error: ${result.error ?: "empty transcript"}")
-                    state = State.IDLE
-                    scheduleOverlayVisibilityRefresh(0)
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
+                    val message = ErrorMessages.transcription(result.error, result.statusCode)
+                    trace(traceId, "api_transcribe_failed_user_message", message)
+                    enterRetry(pcm, message, traceId)
                 }
             }
         }
@@ -525,12 +612,12 @@ class WhisperAccessibilityService : AccessibilityService() {
                 toast("No speech detected")
                 state = State.IDLE
                 scheduleOverlayVisibilityRefresh(0)
-                setBusy(false)
-                setAppearance(COLOR_IDLE)
+                applyVisualState()
             }
             return
         }
 
+        clearRetry()
         val usePostProcessing = prefs().getBoolean("use_post_processing", false)
         val apiKey = prefs().getString("api_key", "") ?: ""
 
@@ -542,8 +629,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     injectText(text, traceId = traceId)
                     state = State.IDLE
                     scheduleOverlayVisibilityRefresh(0)
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
+                    applyVisualState()
                 }
                 return
             }
@@ -562,8 +648,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     }
                     state = State.IDLE
                     scheduleOverlayVisibilityRefresh(0)
-                    setBusy(false)
-                    setAppearance(COLOR_IDLE)
+                    applyVisualState()
                 }
             }
         } else {
@@ -571,8 +656,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 injectText(text, traceId = traceId)
                 state = State.IDLE
                 scheduleOverlayVisibilityRefresh(0)
-                setBusy(false)
-                setAppearance(COLOR_IDLE)
+                applyVisualState()
             }
         }
     }
@@ -581,8 +665,46 @@ class WhisperAccessibilityService : AccessibilityService() {
         toast(msg)
         state = State.IDLE
         scheduleOverlayVisibilityRefresh(0)
-        setBusy(false)
-        setAppearance(COLOR_IDLE)
+        applyVisualState()
+    }
+
+    private fun enterRetry(pcm: ByteArray, message: String, traceId: String) {
+        retryPcm = pcm
+        retryReason = message
+        state = State.RETRY_READY
+        scheduleOverlayVisibilityRefresh(0)
+        applyVisualState()
+        showFeedback("$message. Tap retry", 3500)
+        trace(traceId, "retry_ready", "pcmBytes=${pcm.size} reason=$message")
+    }
+
+    private fun retryLastRecording() {
+        val pcm = retryPcm
+        if (pcm == null || pcm.isEmpty()) {
+            reset("Nothing to retry")
+            return
+        }
+
+        val traceId = newTraceId()
+        activeTraceId = traceId
+        state = State.TRANSCRIBING
+        scheduleOverlayVisibilityRefresh(0)
+        applyVisualState()
+        showFeedback("Retrying...", 1200)
+        trace(traceId, "retry_start", "pcmBytes=${pcm.size} previousReason=${retryReason.orEmpty()}")
+
+        val useLocal = prefs().getBoolean("use_local", true)
+        val local = localTranscriber
+        if (useLocal && local != null) {
+            transcribeLocal(pcm, local, traceId)
+        } else {
+            transcribeApi(pcm, traceId)
+        }
+    }
+
+    private fun clearRetry() {
+        retryPcm = null
+        retryReason = null
     }
 
     // --- Text injection ---
