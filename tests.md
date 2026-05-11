@@ -28,6 +28,54 @@ Rollback/cleanup notes:
 - Reinstall the previous APK if the watchdog causes unwanted overlay behavior.
 - Disable the `Phone Whisper Codex` accessibility service to stop all overlay behavior.
 
+## Pixel 8a Keyboard Hide Overlay Removal
+
+Feature/change name: Accessibility overlay removal after hiding the keyboard on Pixel 8a.
+
+Prerequisites/setup:
+- Pixel 8a connected with USB debugging enabled.
+- `Phone Whisper Codex` installed with the accessibility service enabled.
+- Android SDK `adb` available.
+
+Step-by-step actions:
+1. Open any app with a normal text field on Pixel 8a.
+2. Focus the field and confirm the keyboard and microphone overlay appear.
+3. Hide the keyboard with the back gesture/button.
+4. Wait up to 1 second.
+5. Inspect `adb logcat -v time -s PhoneWhisper` for `input_method_window` and `overlay_visibility` entries.
+6. Repeat in both light theme and dark theme.
+
+Expected results:
+- The overlay disappears after the keyboard is hidden.
+- Stale `TYPE_INPUT_METHOD` windows with non-keyboard bounds do not keep the overlay visible.
+- Logcat records the keyboard/home/state decision used to show or remove the overlay.
+- Light theme result: overlay appears while the keyboard is visible and disappears when hidden.
+- Dark theme result: overlay appears while the keyboard is visible and disappears when hidden.
+
+Rollback/cleanup notes:
+- Reinstall the previous APK if the stricter keyboard-bounds heuristic hides the overlay too aggressively.
+
+## App Version Display
+
+Feature/change name: Visible app version row and Codex build version bump.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` installed from the current debug APK.
+
+Step-by-step actions:
+1. Open `Phone Whisper Codex`.
+2. Check the row near the top of the settings screen labelled `Version`.
+3. Compare it with the Gradle `versionName` and `versionCode`.
+4. Repeat in both light theme and dark theme.
+
+Expected results:
+- The app shows the installed version as `0.3.6-codex (8)`.
+- Light theme result: version row is readable.
+- Dark theme result: version row is readable.
+
+Rollback/cleanup notes:
+- None.
+
 ## Custom Transcription API URL
 
 Feature/change name: Configurable OpenAI-compatible transcription endpoint.

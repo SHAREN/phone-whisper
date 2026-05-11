@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.ColorStateList
+import android.graphics.Rect
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioFormat
@@ -75,6 +76,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var retryReason: String? = null
     private var activeTraceId: String = ""
     private var recordingStartedAtMs: Long = 0L
+    private var lastOverlayDecision: String = ""
     private val handler = Handler(Looper.getMainLooper())
     private val refreshOverlayVisibility = Runnable { updateOverlayVisibility() }
     private val pollOverlayVisibility = object : Runnable {
@@ -174,11 +176,28 @@ class WhisperAccessibilityService : AccessibilityService() {
         val homeVisible = isHomeScreenForeground()
         val activeOperation = state == State.RECORDING || state == State.TRANSCRIBING
         val shouldShow = activeOperation || (keyboardVisible && !homeVisible)
+        val decision = "keyboard=$keyboardVisible home=$homeVisible state=$state shouldShow=$shouldShow"
+        if (decision != lastOverlayDecision) {
+            lastOverlayDecision = decision
+            Log.i(TAG, "overlay_visibility $decision")
+        }
         if (shouldShow) showOverlay() else removeOverlay()
     }
 
     private fun isInputMethodVisible(): Boolean =
-        windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true
+        windows?.any { window ->
+            if (window.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD) return@any false
+
+            val bounds = Rect()
+            window.getBoundsInScreen(bounds)
+            val minKeyboardHeight = (screenH * 0.12f).toInt()
+            val lowerScreenTop = (screenH * 0.55f).toInt()
+            val visible = bounds.height() >= minKeyboardHeight &&
+                bounds.bottom >= screenH - (8 * dp).toInt() &&
+                bounds.top >= lowerScreenTop
+            Log.i(TAG, "input_method_window bounds=$bounds visible=$visible")
+            visible
+        } == true
 
     private fun isHomeScreenForeground(): Boolean =
         windows
