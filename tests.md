@@ -275,26 +275,33 @@ Rollback/cleanup notes:
 - Restore the normal transcription URL and token after failure testing.
 - Reinstall the previous APK if retry behavior is not desired.
 
-## Idle Button Hitbox
+## Idle Button Hitbox And Position Persistence
 
-Feature/change name: Idle overlay hitbox matches the visible button.
+Feature/change name: Idle overlay hitbox matches the visible button, position persists, and empty transcripts do not show retry.
 
 Prerequisites/setup:
-- `Phone Whisper Codex` installed from the current debug APK.
+- `Phone Whisper Codex` 0.3.11-codex (13) installed from the current debug APK.
 - Accessibility service enabled.
 - A target app with an editable field focused so the overlay is visible.
+- For the empty-transcript case, use a transcription endpoint/test stub that returns no text or an `empty transcript` error.
 
 Step-by-step actions:
 1. Focus a text field and confirm the idle microphone button appears.
 2. Tap inside the visible circular button.
-3. Tap near the button, inside the transparent overlay area but outside the visible circle.
-4. Drag starting from inside the visible circular button.
-5. Repeat in both light theme and dark theme.
+3. Stop/cancel recording so the button returns to idle.
+4. Tap near the button, just outside the visible idle circle.
+5. Drag starting from inside the visible circular button to the left and right screen edges.
+6. Hide the keyboard so the overlay disappears, then focus the field again.
+7. Trigger an empty-transcript/no-text response from the transcription endpoint.
+8. Repeat in both light theme and dark theme.
 
 Expected results:
 - Tapping inside the visible idle button starts recording.
-- Tapping outside the visible idle circle does not start recording and passes through to the underlying app.
+- Tapping outside the visible idle circle does not move the button, does not start recording, and passes through to the underlying app.
 - Dragging still works when started from the visible button.
+- The idle, transcribing, and retry overlay window has no large invisible body; the visible button can sit flush against the screen edge.
+- After hiding and showing the keyboard, the button reappears at the same saved position where it was left.
+- `No transcript returned` returns the button to the normal microphone state and does not show the retry icon.
 - Light theme result: idle hitbox matches the visible circle.
 - Dark theme result: idle hitbox matches the visible circle.
 

@@ -27,7 +27,7 @@ class ErrorMessagesTest {
 
     @Test fun `maps empty transcript`() {
         assertEquals(
-            "No transcript returned",
+            ErrorMessages.NO_TRANSCRIPT_RETURNED,
             ErrorMessages.transcription("empty transcript", 200)
         )
     }

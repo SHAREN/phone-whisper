@@ -55,6 +55,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val AUDIO_UI_UPDATE_FALLBACK_HZ = 120f
         private const val RECORDING_SCALE_FACTOR = 1.40f
         private const val RECORDING_LEVEL_SMOOTHING = 0.22f
+        private const val PREF_OVERLAY_CENTER_X = "overlay_center_x"
+        private const val PREF_OVERLAY_CENTER_Y = "overlay_center_y"
 
         private const val COLOR_IDLE = 0xDD1C1C1E.toInt()
         private const val COLOR_RECORDING = 0xDDEF4444.toInt()
@@ -253,10 +255,8 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val buttonSize = (BTN_DP * dp).toInt()
-        val ringSize = (RING_DP * dp).toInt()
+        val initialWindowSize = overlayWindowSizeForState()
         val pad = (PAD_DP * dp).toInt()
-        val margin = (MARGIN_DP * dp).toInt()
-        val edgeOffset = (ringSize - buttonSize) / 2
 
         val busySpinner = ProgressBar(this).apply {
             isIndeterminate = true
@@ -282,14 +282,13 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         val params = WindowManager.LayoutParams(
-            ringSize, ringSize,
+            initialWindowSize, initialWindowSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = screenW - ringSize - margin + edgeOffset
-            y = screenH / 2 - ringSize / 2
+            restoreOverlayPosition(this)
         }
 
         var startX = 0; var startY = 0
@@ -298,19 +297,18 @@ class WhisperAccessibilityService : AccessibilityService() {
         overlay.setOnTouchListener { v, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    if (!isInsideIdleButton(ev.x, ev.y, ringSize, buttonSize)) return@setOnTouchListener false
                     startX = params.x; startY = params.y
                     touchX = ev.rawX; touchY = ev.rawY
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = startX + (ev.rawX - touchX).toInt()
-                    params.y = startY + (ev.rawY - touchY).toInt()
+                    moveOverlayToTopLeft(
+                        params,
+                        startX + (ev.rawX - touchX).toInt(),
+                        startY + (ev.rawY - touchY).toInt()
+                    )
                     wm.updateViewLayout(v, params)
-                    feedbackLayoutParams?.let {
-                        positionFeedback(it, params)
-                        wm.updateViewLayout(feedbackView, it)
-                    }
+                    updateFeedbackLayout(wm)
                     true
                 }
                 MotionEvent.ACTION_UP -> {
@@ -318,14 +316,15 @@ class WhisperAccessibilityService : AccessibilityService() {
                     if (moved < TAP_THRESHOLD_DP * dp) {
                         onTap()
                     } else {
-                        params.x = if (params.x + ringSize / 2 > screenW / 2)
-                            screenW - ringSize - margin + edgeOffset else margin
+                        snapOverlayToEdge(params)
+                        saveOverlayCenter(params)
                         wm.updateViewLayout(v, params)
-                        feedbackLayoutParams?.let {
-                            positionFeedback(it, params)
-                            wm.updateViewLayout(feedbackView, it)
-                        }
+                        updateFeedbackLayout(wm)
                     }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    saveOverlayCenter(params)
                     true
                 }
                 else -> false
@@ -364,16 +363,90 @@ class WhisperAccessibilityService : AccessibilityService() {
         applyVisualState()
     }
 
-    private fun isInsideIdleButton(x: Float, y: Float, overlaySize: Int, buttonSize: Int): Boolean {
-        val center = overlaySize / 2f
-        val radius = buttonSize / 2f
-        val dx = x - center
-        val dy = y - center
-        return dx * dx + dy * dy <= radius * radius
+    private fun buttonSizePx(): Int = (BTN_DP * dp).toInt()
+
+    private fun recordingWindowSizePx(): Int = (RING_DP * dp).toInt()
+
+    private fun overlayWindowSizeForState(): Int =
+        if (state == State.RECORDING) recordingWindowSizePx() else buttonSizePx()
+
+    private fun restoreOverlayPosition(params: WindowManager.LayoutParams) {
+        val savedX = prefs().getInt(PREF_OVERLAY_CENTER_X, -1)
+        val savedY = prefs().getInt(PREF_OVERLAY_CENTER_Y, -1)
+        if (savedX >= 0 && savedY >= 0) {
+            positionOverlayFromCenter(params, savedX, savedY)
+        } else {
+            positionOverlayFromCenter(params, screenW - buttonSizePx() / 2, screenH / 2)
+        }
+    }
+
+    private fun moveOverlayToTopLeft(params: WindowManager.LayoutParams, x: Int, y: Int) {
+        positionOverlayFromCenter(params, x + params.width / 2, y + params.height / 2)
+    }
+
+    private fun positionOverlayFromCenter(
+        params: WindowManager.LayoutParams,
+        requestedCenterX: Int,
+        requestedCenterY: Int
+    ) {
+        val buttonHalf = buttonSizePx() / 2
+        val maxCenterX = maxOf(buttonHalf, screenW - buttonHalf)
+        val maxCenterY = maxOf(buttonHalf, screenH - buttonHalf)
+        val centerX = requestedCenterX.coerceIn(buttonHalf, maxCenterX)
+        val centerY = requestedCenterY.coerceIn(buttonHalf, maxCenterY)
+        params.x = centerX - params.width / 2
+        params.y = centerY - params.height / 2
+    }
+
+    private fun overlayCenter(params: WindowManager.LayoutParams): Pair<Int, Int> =
+        Pair(params.x + params.width / 2, params.y + params.height / 2)
+
+    private fun snapOverlayToEdge(params: WindowManager.LayoutParams) {
+        val (_, centerY) = overlayCenter(params)
+        val buttonHalf = buttonSizePx() / 2
+        val centerX = if (params.x + params.width / 2 > screenW / 2) {
+            screenW - buttonHalf
+        } else {
+            buttonHalf
+        }
+        positionOverlayFromCenter(params, centerX, centerY)
+    }
+
+    private fun saveOverlayCenter(params: WindowManager.LayoutParams) {
+        val (centerX, centerY) = overlayCenter(params)
+        prefs().edit()
+            .putInt(PREF_OVERLAY_CENTER_X, centerX)
+            .putInt(PREF_OVERLAY_CENTER_Y, centerY)
+            .apply()
+    }
+
+    private fun resizeOverlayWindowForState() {
+        val overlay = overlayView ?: return
+        val params = layoutParams ?: return
+        val targetSize = overlayWindowSizeForState()
+        if (params.width == targetSize && params.height == targetSize) return
+
+        val (centerX, centerY) = overlayCenter(params)
+        params.width = targetSize
+        params.height = targetSize
+        positionOverlayFromCenter(params, centerX, centerY)
+
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        wm.updateViewLayout(overlay, params)
+        updateFeedbackLayout(wm)
+    }
+
+    private fun updateFeedbackLayout(wm: WindowManager) {
+        val view = feedbackView ?: return
+        val bubbleParams = layoutParams ?: return
+        val feedbackParams = feedbackLayoutParams ?: return
+        positionFeedback(feedbackParams, bubbleParams)
+        wm.updateViewLayout(view, feedbackParams)
     }
 
     private fun removeOverlay() {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        layoutParams?.let { saveOverlayCenter(it) }
         overlayView?.let {
             wm.removeView(it)
             overlayView = null
@@ -415,6 +488,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showIdleVisual() {
+        resizeOverlayWindowForState()
         stopRecordingAnimation()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
@@ -427,6 +501,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showRecordingVisual() {
+        resizeOverlayWindowForState()
         spinner?.visibility = View.GONE
         equalizerView?.visibility = View.VISIBLE
         button?.setImageDrawable(null)
@@ -436,6 +511,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showBusyVisual() {
+        resizeOverlayWindowForState()
         stopRecordingAnimation()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
@@ -447,6 +523,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun showRetryVisual() {
+        resizeOverlayWindowForState()
         stopRecordingAnimation()
         equalizerView?.visibility = View.GONE
         equalizerView?.reset()
@@ -729,7 +806,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 handler.post {
                     val message = ErrorMessages.transcription(result.error, result.statusCode)
                     trace(traceId, "api_transcribe_failed_user_message", message)
-                    enterRetry(pcm, message, traceId)
+                    handleTranscriptionFailure(pcm, message, traceId)
                 }
             }
         }
@@ -796,6 +873,20 @@ class WhisperAccessibilityService : AccessibilityService() {
         state = State.IDLE
         scheduleOverlayVisibilityRefresh(0)
         applyVisualState()
+    }
+
+    private fun handleTranscriptionFailure(pcm: ByteArray, message: String, traceId: String) {
+        if (message == ErrorMessages.NO_TRANSCRIPT_RETURNED) {
+            clearRetry()
+            state = State.IDLE
+            scheduleOverlayVisibilityRefresh(0)
+            applyVisualState()
+            showFeedback(message, 2500)
+            trace(traceId, "empty_transcript_no_retry", "pcmBytes=${pcm.size}")
+            return
+        }
+
+        enterRetry(pcm, message, traceId)
     }
 
     private fun enterRetry(pcm: ByteArray, message: String, traceId: String) {

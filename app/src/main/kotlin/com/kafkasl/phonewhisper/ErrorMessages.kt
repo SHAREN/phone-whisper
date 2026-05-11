@@ -1,6 +1,8 @@
 package com.kafkasl.phonewhisper
 
 object ErrorMessages {
+    const val NO_TRANSCRIPT_RETURNED = "No transcript returned"
+
     fun transcription(error: String?, statusCode: Int?): String {
         val raw = error.orEmpty()
         val lower = raw.lowercase()
@@ -19,7 +21,7 @@ object ErrorMessages {
                 lower.contains("network") ->
                 "Network error"
             raw.isBlank() || lower.contains("empty transcript") ->
-                "No transcript returned"
+                NO_TRANSCRIPT_RETURNED
             else -> raw.take(120)
         }
     }
