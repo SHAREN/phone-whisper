@@ -1,6 +1,9 @@
 package com.kafkasl.phonewhisper
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -22,6 +25,8 @@ import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.radiobutton.MaterialRadioButton
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 
 class MainActivity : AppCompatActivity() {
 
@@ -30,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var accRowSub: TextView
     private lateinit var keyRowSub: TextView
     private lateinit var endpointRowSub: TextView
+    private lateinit var historyRowSub: TextView
     private lateinit var promptRowSub: TextView
     private lateinit var promptRow: LinearLayout
     private lateinit var modelContainer: LinearLayout
@@ -69,6 +75,13 @@ class MainActivity : AppCompatActivity() {
         val statusRow = settingsRow("Status", "Checking...")
         statusSubtitle = statusRow.findViewWithTag("subtitle")
         root.addView(statusRow)
+
+        root.addView(sectionHeader("Transcriptions"))
+        val historyRow = settingsRow("Transcription history", "No saved transcriptions") {
+            showTranscriptionHistory()
+        }
+        historyRowSub = historyRow.findViewWithTag("subtitle")
+        root.addView(historyRow)
 
         // --- Setup Section ---
         root.addView(sectionHeader("Setup"))
@@ -351,6 +364,13 @@ class MainActivity : AppCompatActivity() {
 
         endpointRowSub.text = transcriptionBaseUrl().ifBlank { "Official OpenAI" }
 
+        val history = TranscriptionHistoryStore.read(this)
+        historyRowSub.text = when {
+            history.isEmpty() -> "No saved transcriptions"
+            history.size == 1 -> "1 saved transcription"
+            else -> "${history.size} saved transcriptions"
+        }
+
         val prompt = currentPrompt()
         promptRowSub.text = prompt
 
@@ -434,6 +454,87 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun showTranscriptionHistory() {
+        val entries = TranscriptionHistoryStore.read(this)
+        if (entries.isEmpty()) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Transcription history")
+                .setMessage("Your successful dictations will appear here, even if text insertion fails.")
+                .setPositiveButton("Close", null)
+                .show()
+            return
+        }
+
+        val content = vertical(0)
+        entries.forEach { entry ->
+            val preview = entry.text.replace("\n", " ").let { text ->
+                if (text.length <= 160) text else text.take(157) + "..."
+            }
+            val row = settingsRow(formatHistoryTime(entry.createdAtMs), preview) {
+                showTranscriptionEntry(entry)
+            }
+            row.findViewWithTag<TextView>("subtitle").apply {
+                maxLines = 3
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+            content.addView(row)
+        }
+        content.addView(
+            settingsRow("Clear history", "Remove all saved transcriptions") {
+                confirmClearHistory()
+            }
+        )
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Transcription history")
+            .setView(ScrollView(this).apply {
+                addView(content)
+            })
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun showTranscriptionEntry(entry: TranscriptionHistoryEntry) {
+        val textView = TextView(this).apply {
+            text = entry.text
+            textSize = 17f
+            setTextColor(attrColor(android.R.attr.textColorPrimary))
+            setTextIsSelectable(true)
+            setPadding(dp(24), dp(12), dp(24), dp(12))
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(formatHistoryTime(entry.createdAtMs))
+            .setView(ScrollView(this).apply { addView(textView) })
+            .setPositiveButton("Copy") { _, _ -> copyHistoryText(entry.text) }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun confirmClearHistory() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Clear transcription history?")
+            .setMessage("This cannot be undone.")
+            .setPositiveButton("Clear") { _, _ ->
+                TranscriptionHistoryStore.clear(this)
+                refresh()
+                toast("Transcription history cleared")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun copyHistoryText(text: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Phone Whisper transcription", text))
+        toast("Transcription copied")
+    }
+
+    private fun formatHistoryTime(createdAtMs: Long): String {
+        if (createdAtMs <= 0L) return "Saved transcription"
+        return DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+            .format(Date(createdAtMs))
     }
 
     // --- UI Helpers ---

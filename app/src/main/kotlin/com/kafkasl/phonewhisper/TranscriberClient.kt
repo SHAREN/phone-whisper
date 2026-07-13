@@ -55,18 +55,20 @@ object TranscriberClient {
     }
 
     fun transcribe(
-        wavData: ByteArray,
+        audioData: ByteArray,
+        mimeType: String,
+        fileName: String,
         apiKey: String,
         baseUrl: String = "",
         requestId: String = "unknown",
         callback: (Result) -> Unit
     ) {
         val startedAt = SystemClock.elapsedRealtime()
-        log(requestId, "client_build_start", "wavBytes=${wavData.size} hasToken=${apiKey.isNotBlank()} baseUrl=${baseUrl.ifBlank { DEFAULT_BASE_URL }}")
+        log(requestId, "client_build_start", "audioBytes=${audioData.size} mime=$mimeType file=$fileName hasToken=${apiKey.isNotBlank()} baseUrl=${baseUrl.ifBlank { DEFAULT_BASE_URL }}")
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("model", "whisper-1")
-            .addFormDataPart("file", "audio.wav", wavData.toRequestBody("audio/wav".toMediaType()))
+            .addFormDataPart("file", fileName, audioData.toRequestBody(mimeType.toMediaType()))
             .build()
 
         val requestBuilder = try {

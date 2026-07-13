@@ -2,12 +2,15 @@ package com.kafkasl.phonewhisper
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.content.BroadcastReceiver
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.content.res.ColorStateList
 import android.graphics.Rect
 import android.graphics.PixelFormat
@@ -19,6 +22,7 @@ import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
@@ -34,6 +38,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.UUID
 import kotlin.concurrent.thread
 import kotlin.math.abs
@@ -55,6 +60,12 @@ class WhisperAccessibilityService : AccessibilityService() {
         private const val AUDIO_UI_UPDATE_FALLBACK_HZ = 120f
         private const val RECORDING_SCALE_FACTOR = 1.40f
         private const val RECORDING_LEVEL_SMOOTHING = 0.22f
+        private const val CLOUD_AUDIO_BITRATE = 24_000
+        private const val COMPRESSED_LEVEL_POLL_MS = 50L
+        private const val RECORDING_NOTIFICATION_CHANNEL = "phone_whisper_recording"
+        private const val RECORDING_NOTIFICATION_ID = 4107
+        private const val RECORDING_WAKE_LOCK_TAG = "PhoneWhisper:Recording"
+        private const val RECORDING_WAKE_LOCK_TIMEOUT_MS = 4 * 60 * 60 * 1000L
         private const val PREF_OVERLAY_CENTER_X = "overlay_center_x"
         private const val PREF_OVERLAY_CENTER_Y = "overlay_center_y"
 
@@ -70,6 +81,13 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private enum class State { IDLE, RECORDING, TRANSCRIBING, RETRY_READY }
+    private enum class RecordingBackend { PCM, COMPRESSED_OPUS }
+    private data class AudioPayload(
+        val bytes: ByteArray,
+        val mimeType: String,
+        val fileName: String,
+        val source: String
+    )
 
     private var state = State.IDLE
     private var overlayView: FrameLayout? = null
@@ -80,11 +98,16 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var layoutParams: WindowManager.LayoutParams? = null
     private var feedbackLayoutParams: WindowManager.LayoutParams? = null
     private var audioRecord: AudioRecord? = null
+    private var mediaRecorder: MediaRecorder? = null
+    private var compressedAudioFile: File? = null
+    private var recordingBackend: RecordingBackend = RecordingBackend.PCM
     private var pcmStream: ByteArrayOutputStream? = null
-    private var retryPcm: ByteArray? = null
+    private var retryPayload: AudioPayload? = null
     private var retryReason: String? = null
     private var activeTraceId: String = ""
     private var recordingStartedAtMs: Long = 0L
+    private var recordingWakeLock: PowerManager.WakeLock? = null
+    private var recordingForegroundActive = false
     private var lastOverlayDecision: String = ""
     private var lastAudioUiUpdateNs: Long = 0L
     private var audioUiUpdateIntervalNs: Long = refreshRateIntervalNs(AUDIO_UI_UPDATE_FALLBACK_HZ)
@@ -118,15 +141,13 @@ class WhisperAccessibilityService : AccessibilityService() {
             postRecordingAnimationFrame()
         }
     }
-    private var screenReceiverRegistered = false
-    private val screenReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SCREEN_OFF) {
-                cancelRecording("screen_off")
-            }
+    private val pollCompressedAudioLevel = object : Runnable {
+        override fun run() {
+            if (state != State.RECORDING || recordingBackend != RecordingBackend.COMPRESSED_OPUS) return
+            updateAudioLevelFromAmplitude(mediaRecorder?.maxAmplitude ?: 0)
+            handler.postDelayed(this, COMPRESSED_LEVEL_POLL_MS)
         }
     }
-
     // Local transcription engine (loaded lazily)
     private var localTranscriber: LocalTranscriber? = null
 
@@ -138,7 +159,6 @@ class WhisperAccessibilityService : AccessibilityService() {
         instance = this
         audioUiUpdateIntervalNs = resolveAudioUiUpdateIntervalNs()
         enableInteractiveWindowEvents()
-        registerScreenReceiver()
         handler.removeCallbacks(pollOverlayVisibility)
         handler.post(pollOverlayVisibility)
         scheduleOverlayVisibilityRefresh(0)
@@ -155,7 +175,6 @@ class WhisperAccessibilityService : AccessibilityService() {
         instance = null
         handler.removeCallbacks(refreshOverlayVisibility)
         handler.removeCallbacks(pollOverlayVisibility)
-        unregisterScreenReceiver()
         cancelRecording("service_destroy")
         removeOverlay()
         super.onDestroy()
@@ -284,7 +303,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         val params = WindowManager.LayoutParams(
             initialWindowSize, initialWindowSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                (if (state == State.RECORDING) WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON else 0),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -596,6 +616,17 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun updateAudioLevelFromAmplitude(amplitude: Int) {
+        val normalized = (amplitude / 32767.0).coerceIn(0.0, 1.0)
+        val level = ((normalized * 8.5).coerceIn(0.02, 1.0)).toFloat()
+        val now = SystemClock.elapsedRealtimeNanos()
+        if (now - lastAudioUiUpdateNs < audioUiUpdateIntervalNs) return
+        lastAudioUiUpdateNs = now
+        if (state == State.RECORDING) {
+            targetRecordingLevel = level
+        }
+    }
+
     private fun startRecordingAnimation() {
         handler.removeCallbacks(animateRecordingLevel)
         postRecordingAnimationFrame()
@@ -630,21 +661,85 @@ class WhisperAccessibilityService : AccessibilityService() {
         return refreshRateIntervalNs(safeHz)
     }
 
-    private fun registerScreenReceiver() {
-        if (!screenReceiverRegistered) {
-            registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
-            screenReceiverRegistered = true
+    private fun beginRecordingSession(traceId: String): Boolean {
+        return try {
+            val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(
+                NotificationChannel(
+                    RECORDING_NOTIFICATION_CHANNEL,
+                    "Phone Whisper recording",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Keeps dictation active while the screen is off"
+                    setShowBadge(false)
+                }
+            )
+
+            val openApp = PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = Notification.Builder(this, RECORDING_NOTIFICATION_CHANNEL)
+                .setSmallIcon(R.drawable.ic_mic)
+                .setContentTitle("Phone Whisper is recording")
+                .setContentText("Tap the microphone bubble to finish dictation")
+                .setContentIntent(openApp)
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build()
+
+            startForeground(
+                RECORDING_NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+            recordingForegroundActive = true
+
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            recordingWakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                RECORDING_WAKE_LOCK_TAG
+            ).apply {
+                setReferenceCounted(false)
+                acquire(RECORDING_WAKE_LOCK_TIMEOUT_MS)
+            }
+            setOverlayKeepScreenOn(true)
+            trace(traceId, "recording_session_started", "foreground=true wakeLock=true keepScreenOn=true")
+            true
+        } catch (e: Exception) {
+            trace(traceId, "recording_session_start_failed", e.message ?: e.javaClass.simpleName)
+            endRecordingSession(traceId, "start_failed")
+            false
         }
     }
 
-    private fun unregisterScreenReceiver() {
-        if (!screenReceiverRegistered) return
-        try {
-            unregisterReceiver(screenReceiver)
-        } catch (_: IllegalArgumentException) {
-            // Receiver can already be gone if Android tears down the service process.
+    private fun endRecordingSession(traceId: String, reason: String) {
+        val wakeLock = recordingWakeLock
+        recordingWakeLock = null
+        if (wakeLock?.isHeld == true) {
+            try {
+                wakeLock.release()
+            } catch (_: RuntimeException) {
+            }
         }
-        screenReceiverRegistered = false
+        if (recordingForegroundActive) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            recordingForegroundActive = false
+        }
+        setOverlayKeepScreenOn(false)
+        trace(traceId, "recording_session_ended", "reason=$reason")
+    }
+
+    private fun setOverlayKeepScreenOn(enabled: Boolean) {
+        val overlay = overlayView ?: return
+        val params = layoutParams ?: return
+        val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        val updatedFlags = if (enabled) params.flags or flag else params.flags and flag.inv()
+        if (updatedFlags == params.flags) return
+        params.flags = updatedFlags
+        (getSystemService(WINDOW_SERVICE) as WindowManager).updateViewLayout(overlay, params)
     }
 
     // --- State machine ---
@@ -669,6 +764,19 @@ class WhisperAccessibilityService : AccessibilityService() {
             toast("Grant audio permission in Phone Whisper app"); return
         }
 
+        val useLocal = prefs().getBoolean("use_local", true)
+        val local = localTranscriber
+        val usePcmBackend = useLocal && local != null
+        trace(traceId, "record_backend_selected", "backend=${if (usePcmBackend) "pcm_local" else "opus_cloud"} useLocal=$useLocal hasLocal=${local != null}")
+
+        if (!usePcmBackend && startCompressedRecording(traceId)) {
+            return
+        }
+
+        startPcmRecording(traceId)
+    }
+
+    private fun startPcmRecording(traceId: String) {
         val bufSize = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
@@ -683,13 +791,31 @@ class WhisperAccessibilityService : AccessibilityService() {
             toast("Audio permission denied"); return
         }
 
+        if (!beginRecordingSession(traceId)) {
+            audioRecord?.release()
+            audioRecord = null
+            toast("Unable to keep recording active in background")
+            return
+        }
+
         pcmStream = ByteArrayOutputStream()
-        audioRecord!!.startRecording()
+        recordingBackend = RecordingBackend.PCM
+        try {
+            audioRecord!!.startRecording()
+        } catch (e: Exception) {
+            trace(traceId, "record_start_failed", e.message ?: e.javaClass.simpleName)
+            audioRecord?.release()
+            audioRecord = null
+            pcmStream = null
+            endRecordingSession(traceId, "pcm_start_failed")
+            toast("Unable to start recording")
+            return
+        }
         recordingStartedAtMs = SystemClock.elapsedRealtime()
         state = State.RECORDING
         scheduleOverlayVisibilityRefresh(0)
         applyVisualState()
-        trace(traceId, "record_started")
+        trace(traceId, "record_started", "backend=pcm sampleRate=$SAMPLE_RATE channels=1 bits=16")
 
         thread {
             val buf = ByteArray(bufSize)
@@ -703,6 +829,56 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun startCompressedRecording(traceId: String): Boolean {
+        val file = try {
+            File.createTempFile("phone-whisper-", ".ogg", cacheDir)
+        } catch (e: Exception) {
+            trace(traceId, "compressed_file_create_failed", e.message ?: "unknown")
+            return false
+        }
+
+        val recorder = MediaRecorder()
+        return try {
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.OGG)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
+            recorder.setAudioChannels(1)
+            recorder.setAudioSamplingRate(SAMPLE_RATE)
+            recorder.setAudioEncodingBitRate(CLOUD_AUDIO_BITRATE)
+            recorder.setOutputFile(file.absolutePath)
+            recorder.prepare()
+            if (!beginRecordingSession(traceId)) {
+                recorder.release()
+                file.delete()
+                return false
+            }
+            recorder.start()
+
+            compressedAudioFile = file
+            mediaRecorder = recorder
+            recordingBackend = RecordingBackend.COMPRESSED_OPUS
+            recordingStartedAtMs = SystemClock.elapsedRealtime()
+            state = State.RECORDING
+            scheduleOverlayVisibilityRefresh(0)
+            applyVisualState()
+            handler.removeCallbacks(pollCompressedAudioLevel)
+            handler.post(pollCompressedAudioLevel)
+            trace(traceId, "record_started", "backend=opus_ogg sampleRate=$SAMPLE_RATE channels=1 bitrate=$CLOUD_AUDIO_BITRATE file=${file.name}")
+            true
+        } catch (e: Exception) {
+            trace(traceId, "compressed_record_start_failed", e.message ?: "unknown")
+            try {
+                recorder.release()
+            } catch (_: Exception) {
+            }
+            file.delete()
+            mediaRecorder = null
+            compressedAudioFile = null
+            endRecordingSession(traceId, "compressed_start_failed")
+            false
+        }
+    }
+
     private fun stopAndTranscribe() {
         val traceId = activeTraceId.ifBlank { newTraceId().also { activeTraceId = it } }
         val recordDurationMs = if (recordingStartedAtMs > 0) SystemClock.elapsedRealtime() - recordingStartedAtMs else 0L
@@ -712,25 +888,81 @@ class WhisperAccessibilityService : AccessibilityService() {
         stopPulse()
         applyVisualState()
 
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
+        if (recordingBackend == RecordingBackend.COMPRESSED_OPUS) {
+            val payload = stopCompressedRecording(traceId, recordDurationMs)
+            endRecordingSession(traceId, "recording_stopped")
+            if (payload == null || payload.bytes.isEmpty()) {
+                reset("No audio captured")
+                return
+            }
+
+            transcribeApi(payload, traceId)
+            return
+        }
+
+        try {
+            audioRecord?.stop()
+        } catch (e: IllegalStateException) {
+            trace(traceId, "pcm_record_stop_failed", e.message ?: "invalid_state")
+        } finally {
+            audioRecord?.release()
+            audioRecord = null
+            endRecordingSession(traceId, "recording_stopped")
+        }
 
         val pcm = pcmStream?.toByteArray() ?: ByteArray(0)
         pcmStream = null
-        trace(traceId, "record_stopped", "pcmBytes=${pcm.size} recordDurationMs=$recordDurationMs")
+        trace(traceId, "record_stopped", "backend=pcm pcmBytes=${pcm.size} recordDurationMs=$recordDurationMs")
 
         if (pcm.isEmpty()) { reset("No audio captured"); return }
 
-        val useLocal = prefs().getBoolean("use_local", true)
         val local = localTranscriber
-        trace(traceId, "transcription_route", "useLocal=$useLocal hasLocal=${local != null}")
-
-        if (useLocal && local != null) {
+        if (prefs().getBoolean("use_local", true) && local != null) {
+            trace(traceId, "transcription_route", "route=local pcmBytes=${pcm.size}")
             transcribeLocal(pcm, local, traceId)
         } else {
-            transcribeApi(pcm, traceId)
+            val wavStarted = SystemClock.elapsedRealtime()
+            val wav = WavWriter.encode(pcm)
+            trace(traceId, "wav_fallback_encode_end", "elapsedMs=${SystemClock.elapsedRealtime() - wavStarted} wavBytes=${wav.size}")
+            transcribeApi(AudioPayload(wav, "audio/wav", "audio.wav", "wav_fallback"), traceId)
         }
+    }
+
+    private fun stopCompressedRecording(traceId: String, recordDurationMs: Long): AudioPayload? {
+        handler.removeCallbacks(pollCompressedAudioLevel)
+        val recorder = mediaRecorder
+        val file = compressedAudioFile
+        mediaRecorder = null
+        compressedAudioFile = null
+
+        try {
+            recorder?.stop()
+        } catch (e: RuntimeException) {
+            trace(traceId, "compressed_record_stop_failed", e.message ?: "unknown")
+        } finally {
+            try {
+                recorder?.release()
+            } catch (_: Exception) {
+            }
+        }
+
+        if (file == null || !file.exists()) return null
+        val bytes = try {
+            file.readBytes()
+        } catch (e: Exception) {
+            trace(traceId, "compressed_file_read_failed", e.message ?: "unknown")
+            null
+        } finally {
+            file.delete()
+        } ?: return null
+
+        val approxBitrate = if (recordDurationMs > 0) (bytes.size * 8_000L / recordDurationMs) else 0L
+        trace(
+            traceId,
+            "record_stopped",
+            "backend=opus_ogg audioBytes=${bytes.size} recordDurationMs=$recordDurationMs approxBitrate=$approxBitrate"
+        )
+        return AudioPayload(bytes, "audio/ogg", "audio.ogg", "opus_ogg")
     }
 
     private fun cancelRecording(reason: String) {
@@ -741,14 +973,25 @@ class WhisperAccessibilityService : AccessibilityService() {
         trace(traceId, "record_cancelled", "reason=$reason recordDurationMs=$recordDurationMs")
 
         state = State.IDLE
+        handler.removeCallbacks(pollCompressedAudioLevel)
         try {
             audioRecord?.stop()
         } catch (_: IllegalStateException) {
         }
         audioRecord?.release()
         audioRecord = null
+        try {
+            mediaRecorder?.stop()
+        } catch (_: Exception) {
+        }
+        mediaRecorder?.release()
+        mediaRecorder = null
+        compressedAudioFile?.delete()
+        compressedAudioFile = null
         pcmStream = null
         recordingStartedAtMs = 0L
+        recordingBackend = RecordingBackend.PCM
+        endRecordingSession(traceId, reason)
         stopPulse()
         clearRetry()
         removeOverlay()
@@ -778,17 +1021,14 @@ class WhisperAccessibilityService : AccessibilityService() {
                 trace(traceId, "local_transcribe_failed", e.message ?: "unknown")
                 Log.e(TAG, "trace=$traceId Local transcription failed", e)
                 handler.post {
-                    enterRetry(pcm, ErrorMessages.local(e.message), traceId)
+                    val wav = WavWriter.encode(pcm)
+                    enterRetry(AudioPayload(wav, "audio/wav", "audio.wav", "local_wav_retry"), ErrorMessages.local(e.message), traceId)
                 }
             }
         }
     }
 
-    private fun transcribeApi(pcm: ByteArray, traceId: String) {
-        val wavStarted = SystemClock.elapsedRealtime()
-        trace(traceId, "wav_encode_start", "pcmBytes=${pcm.size}")
-        val wav = WavWriter.encode(pcm)
-        trace(traceId, "wav_encode_end", "elapsedMs=${SystemClock.elapsedRealtime() - wavStarted} wavBytes=${wav.size}")
+    private fun transcribeApi(payload: AudioPayload, traceId: String) {
         val apiKey = prefs().getString("api_key", "") ?: ""
         val transcriptionBaseUrl = prefs().getString("transcription_base_url", "") ?: ""
         if (apiKey.isBlank() && transcriptionBaseUrl.isBlank()) {
@@ -797,8 +1037,12 @@ class WhisperAccessibilityService : AccessibilityService() {
             return
         }
 
-        trace(traceId, "api_transcribe_start", "url=${TranscriberClient.transcriptionUrl(transcriptionBaseUrl)} wavBytes=${wav.size} hasToken=${apiKey.isNotBlank()}")
-        TranscriberClient.transcribe(wav, apiKey, transcriptionBaseUrl, traceId) { result ->
+        trace(
+            traceId,
+            "api_transcribe_start",
+            "url=${TranscriberClient.transcriptionUrl(transcriptionBaseUrl)} audioBytes=${payload.bytes.size} mime=${payload.mimeType} file=${payload.fileName} source=${payload.source} hasToken=${apiKey.isNotBlank()}"
+        )
+        TranscriberClient.transcribe(payload.bytes, payload.mimeType, payload.fileName, apiKey, transcriptionBaseUrl, traceId) { result ->
             trace(traceId, "api_transcribe_callback", "status=${result.statusCode} elapsedMs=${result.elapsedMs} hasText=${!result.text.isNullOrBlank()} error=${result.error ?: ""}")
             if (result.text != null && result.text.isNotBlank()) {
                 handleTranscriptionResult(result.text, traceId)
@@ -806,7 +1050,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 handler.post {
                     val message = ErrorMessages.transcription(result.error, result.statusCode)
                     trace(traceId, "api_transcribe_failed_user_message", message)
-                    handleTranscriptionFailure(pcm, message, traceId)
+                    handleTranscriptionFailure(payload, message, traceId)
                 }
             }
         }
@@ -875,33 +1119,33 @@ class WhisperAccessibilityService : AccessibilityService() {
         applyVisualState()
     }
 
-    private fun handleTranscriptionFailure(pcm: ByteArray, message: String, traceId: String) {
+    private fun handleTranscriptionFailure(payload: AudioPayload, message: String, traceId: String) {
         if (message == ErrorMessages.NO_TRANSCRIPT_RETURNED) {
             clearRetry()
             state = State.IDLE
             scheduleOverlayVisibilityRefresh(0)
             applyVisualState()
             showFeedback(message, 2500)
-            trace(traceId, "empty_transcript_no_retry", "pcmBytes=${pcm.size}")
+            trace(traceId, "empty_transcript_no_retry", "audioBytes=${payload.bytes.size} source=${payload.source}")
             return
         }
 
-        enterRetry(pcm, message, traceId)
+        enterRetry(payload, message, traceId)
     }
 
-    private fun enterRetry(pcm: ByteArray, message: String, traceId: String) {
-        retryPcm = pcm
+    private fun enterRetry(payload: AudioPayload, message: String, traceId: String) {
+        retryPayload = payload
         retryReason = message
         state = State.RETRY_READY
         scheduleOverlayVisibilityRefresh(0)
         applyVisualState()
         showFeedback("$message. Tap retry", 3500)
-        trace(traceId, "retry_ready", "pcmBytes=${pcm.size} reason=$message")
+        trace(traceId, "retry_ready", "audioBytes=${payload.bytes.size} source=${payload.source} reason=$message")
     }
 
     private fun retryLastRecording() {
-        val pcm = retryPcm
-        if (pcm == null || pcm.isEmpty()) {
+        val payload = retryPayload
+        if (payload == null || payload.bytes.isEmpty()) {
             reset("Nothing to retry")
             return
         }
@@ -912,19 +1156,13 @@ class WhisperAccessibilityService : AccessibilityService() {
         scheduleOverlayVisibilityRefresh(0)
         applyVisualState()
         showFeedback("Retrying...", 1200)
-        trace(traceId, "retry_start", "pcmBytes=${pcm.size} previousReason=${retryReason.orEmpty()}")
+        trace(traceId, "retry_start", "audioBytes=${payload.bytes.size} source=${payload.source} previousReason=${retryReason.orEmpty()}")
 
-        val useLocal = prefs().getBoolean("use_local", true)
-        val local = localTranscriber
-        if (useLocal && local != null) {
-            transcribeLocal(pcm, local, traceId)
-        } else {
-            transcribeApi(pcm, traceId)
-        }
+        transcribeApi(payload, traceId)
     }
 
     private fun clearRetry() {
-        retryPcm = null
+        retryPayload = null
         retryReason = null
     }
 
@@ -938,6 +1176,12 @@ class WhisperAccessibilityService : AccessibilityService() {
     ) {
         val copyToClipboard = prefs().getBoolean("copy_transcript_to_clipboard", false)
         trace(traceId, "inject_start", "chars=${text.length} copyToClipboard=$copyToClipboard")
+        val historyEntry = TranscriptionHistoryStore.add(this, text)
+        trace(
+            traceId,
+            "transcription_history_saved",
+            "saved=${historyEntry != null} entryId=${historyEntry?.id?.take(8).orEmpty()} chars=${text.length}"
+        )
         if (copyToClipboard) {
             val clip = ClipData.newPlainText("phonewhisper", text)
             (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)

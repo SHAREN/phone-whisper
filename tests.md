@@ -307,3 +307,98 @@ Expected results:
 
 Rollback/cleanup notes:
 - Reinstall the previous APK if the larger transparent drag area is preferred.
+
+## Compressed Cloud Audio Uploads
+
+Feature/change name: Cloud dictation records and uploads Opus/Ogg instead of WAV/PCM.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` 0.3.12-codex (14) installed from the current debug APK.
+- Accessibility service and audio permission enabled.
+- Cloud transcription configured with a valid transcription URL/token.
+- `Use local transcription` disabled, or local model unavailable, so the cloud path is used.
+- Logcat available with `adb logcat -s PhoneWhisper`.
+
+Step-by-step actions:
+1. Focus a text field and confirm the idle microphone button appears.
+2. Start recording and speak for roughly 10 seconds.
+3. Stop recording and wait for text insertion.
+4. Inspect logcat lines for `record_started`, `record_stopped`, `api_transcribe_start`, and `request_body_end`.
+5. Repeat the flow in light theme and dark theme.
+
+Expected results:
+- `record_started` reports `backend=opus_ogg`, `sampleRate=16000`, `channels=1`, and `bitrate=24000`.
+- `record_stopped` reports compressed `audioBytes` and an approximate bitrate near 24 kbit/s plus container overhead.
+- `api_transcribe_start` sends `mime=audio/ogg`, `file=audio.ogg`, and `source=opus_ogg`.
+- A 10 second recording is much smaller than the previous WAV path, roughly tens of KB instead of about 320 KB.
+- Server transcription still succeeds and inserts the recognized text.
+- Light theme result: recording, loader, and inserted text remain usable.
+- Dark theme result: recording, loader, and inserted text remain usable.
+
+Rollback/cleanup notes:
+- Reinstall the previous APK if the transcription endpoint rejects Ogg/Opus.
+- Re-enable local transcription if testing should avoid the cloud upload path.
+
+## Recording With Screen Off
+
+Feature/change name: Keep dictation active while the display sleeps or is manually turned off.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` 0.3.13-codex (15) installed.
+- Audio permission and accessibility service enabled.
+- A working local or cloud transcription provider configured.
+- Battery optimization may remain enabled for the first test.
+
+Step-by-step actions:
+1. Focus an editable text field and start recording from the microphone overlay.
+2. Do not touch the phone and confirm the display does not automatically dim or turn off during recording.
+3. Press the power button to turn the display off manually.
+4. Continue speaking for at least 30 seconds while the screen is off.
+5. Turn the display on, unlock the phone, and tap the microphone overlay to finish recording.
+6. Wait for transcription and verify that speech recorded before and after screen-off is present.
+7. Repeat once in light theme and once in dark theme.
+
+Expected results:
+- The display stays awake while recording unless the user turns it off manually.
+- A persistent `Phone Whisper is recording` notification is present during recording.
+- Manually turning the display off does not cancel `AudioRecord` or `MediaRecorder`.
+- The overlay returns in the recording state after unlocking.
+- The foreground notification and recording wake lock are released after stopping or cancelling.
+- Light theme result: overlay and history UI remain readable.
+- Dark theme result: overlay and history UI use dark system surfaces without light-theme artifacts.
+
+Rollback/cleanup notes:
+- Stop recording before disabling the accessibility service.
+- Reinstall the previous APK to restore cancellation on screen-off.
+
+## Transcription History
+
+Feature/change name: Locally retain successful transcriptions for recovery when text insertion fails.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` 0.3.13-codex (15) installed.
+- At least one successful local or cloud transcription.
+
+Step-by-step actions:
+1. Dictate text into a normal editable field and finish transcription.
+2. Open the Phone Whisper application.
+3. Tap `Transcription history` and verify the newest transcript appears first with date/time and preview.
+4. Tap the history item and verify the complete text is selectable.
+5. Tap `Copy`, paste into another application, and compare the pasted text with the transcript.
+6. Repeat a transcription in a field where accessibility insertion is known to fail or is unavailable.
+7. Reopen history and confirm that transcription was still saved.
+8. Tap `Clear history`, confirm the warning, close/reopen the history dialog, and verify it is empty.
+9. Repeat the UI checks in light theme and dark theme.
+
+Expected results:
+- Final text is saved before the accessibility insertion attempt.
+- History persists after closing and reopening the application.
+- Up to 100 recent entries are retained with a bounded total text size.
+- Copying from history places only the selected transcript in the clipboard.
+- Clearing history removes all entries after confirmation.
+- Light theme result: list, detail dialog, text, and buttons are readable.
+- Dark theme result: list and dialogs use dark system surfaces with readable text.
+
+Rollback/cleanup notes:
+- Use `Clear history` to remove test transcripts.
+- Uninstalling the application also removes the local history.
