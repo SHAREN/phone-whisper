@@ -376,23 +376,24 @@ Rollback/cleanup notes:
 Feature/change name: Locally retain successful transcriptions for recovery when text insertion fails.
 
 Prerequisites/setup:
-- `Phone Whisper Codex` 0.3.13-codex (15) installed.
+- `Phone Whisper Codex` 0.3.14-codex (16) installed.
 - At least one successful local or cloud transcription.
 
 Step-by-step actions:
 1. Dictate text into a normal editable field and finish transcription.
 2. Open the Phone Whisper application.
-3. Tap `Transcription history` and verify the newest transcript appears first with date/time and preview.
+3. Tap the prominent `История транскрибаций` button below the application title and verify the newest transcript appears first with date/time and preview.
 4. Tap the history item and verify the complete text is selectable.
-5. Tap `Copy`, paste into another application, and compare the pasted text with the transcript.
+5. Tap `Копировать`, paste into another application, and compare the pasted text with the transcript.
 6. Repeat a transcription in a field where accessibility insertion is known to fail or is unavailable.
 7. Reopen history and confirm that transcription was still saved.
-8. Tap `Clear history`, confirm the warning, close/reopen the history dialog, and verify it is empty.
+8. Tap `Очистить историю`, confirm the warning, close/reopen the history dialog, and verify it is empty.
 9. Repeat the UI checks in light theme and dark theme.
 
 Expected results:
 - Final text is saved before the accessibility insertion attempt.
 - History persists after closing and reopening the application.
+- The main-screen history button displays the number of saved entries when history is not empty.
 - Up to 100 recent entries are retained with a bounded total text size.
 - Copying from history places only the selected transcript in the clipboard.
 - Clearing history removes all entries after confirmation.
@@ -400,5 +401,30 @@ Expected results:
 - Dark theme result: list and dialogs use dark system surfaces with readable text.
 
 Rollback/cleanup notes:
-- Use `Clear history` to remove test transcripts.
+- Use `Очистить историю` to remove test transcripts.
 - Uninstalling the application also removes the local history.
+
+## In-App APK Update Link
+
+Feature/change name: Open the current Phone Whisper APK download directly from the application.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` 0.3.14-codex (16) installed.
+- A browser and internet connection are available.
+
+Step-by-step actions:
+1. Open the Phone Whisper application.
+2. Confirm that `Скачать обновление` is visible below the application title without opening another settings section.
+3. Tap `Скачать обновление`.
+4. Confirm that the browser opens `http://whisper.webuirenat.duckdns.org/phone-whisper.apk` and starts or offers the APK download.
+5. Repeat the visibility check in light theme and dark theme.
+
+Expected results:
+- The update action is immediately visible on the main screen.
+- Android delegates the stable APK URL to the user's browser or download handler.
+- Failure to find a compatible handler shows a Russian error toast instead of crashing the application.
+- Light theme result: the update button is readable and visually distinct.
+- Dark theme result: the update button uses the active Material dark theme without a light surface artifact.
+
+Rollback/cleanup notes:
+- Cancel or remove the downloaded APK if installation is not required.

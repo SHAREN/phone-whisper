@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -35,7 +36,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var accRowSub: TextView
     private lateinit var keyRowSub: TextView
     private lateinit var endpointRowSub: TextView
-    private lateinit var historyRowSub: TextView
+    private lateinit var historyButton: MaterialButton
     private lateinit var promptRowSub: TextView
     private lateinit var promptRow: LinearLayout
     private lateinit var modelContainer: LinearLayout
@@ -69,19 +70,32 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(header)
 
+        val quickActions = vertical(dp(24), 0)
+        historyButton = MaterialButton(this).apply {
+            text = "История транскрибаций"
+            isAllCaps = false
+            textSize = 17f
+            setOnClickListener { showTranscriptionHistory() }
+            layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).apply {
+                bottomMargin = dp(8)
+            }
+        }
+        quickActions.addView(historyButton)
+        quickActions.addView(MaterialButton(this).apply {
+            text = "Скачать обновление"
+            isAllCaps = false
+            textSize = 17f
+            setOnClickListener { openUpdateDownload() }
+            layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
+        })
+        root.addView(quickActions)
+
         root.addView(settingsRow("Version", appVersionLabel()))
 
         // Status row
         val statusRow = settingsRow("Status", "Checking...")
         statusSubtitle = statusRow.findViewWithTag("subtitle")
         root.addView(statusRow)
-
-        root.addView(sectionHeader("Transcriptions"))
-        val historyRow = settingsRow("Transcription history", "No saved transcriptions") {
-            showTranscriptionHistory()
-        }
-        historyRowSub = historyRow.findViewWithTag("subtitle")
-        root.addView(historyRow)
 
         // --- Setup Section ---
         root.addView(sectionHeader("Setup"))
@@ -365,10 +379,10 @@ class MainActivity : AppCompatActivity() {
         endpointRowSub.text = transcriptionBaseUrl().ifBlank { "Official OpenAI" }
 
         val history = TranscriptionHistoryStore.read(this)
-        historyRowSub.text = when {
-            history.isEmpty() -> "No saved transcriptions"
-            history.size == 1 -> "1 saved transcription"
-            else -> "${history.size} saved transcriptions"
+        historyButton.text = if (history.isEmpty()) {
+            "История транскрибаций"
+        } else {
+            "История транскрибаций · ${history.size} ${historyEntryLabel(history.size)}"
         }
 
         val prompt = currentPrompt()
@@ -460,9 +474,9 @@ class MainActivity : AppCompatActivity() {
         val entries = TranscriptionHistoryStore.read(this)
         if (entries.isEmpty()) {
             android.app.AlertDialog.Builder(this)
-                .setTitle("Transcription history")
-                .setMessage("Your successful dictations will appear here, even if text insertion fails.")
-                .setPositiveButton("Close", null)
+                .setTitle("История транскрибаций")
+                .setMessage("Здесь будут сохраняться успешные расшифровки, даже если текст не удалось вставить в приложение.")
+                .setPositiveButton("Закрыть", null)
                 .show()
             return
         }
@@ -482,17 +496,17 @@ class MainActivity : AppCompatActivity() {
             content.addView(row)
         }
         content.addView(
-            settingsRow("Clear history", "Remove all saved transcriptions") {
+            settingsRow("Очистить историю", "Удалить все сохраненные расшифровки") {
                 confirmClearHistory()
             }
         )
 
         android.app.AlertDialog.Builder(this)
-            .setTitle("Transcription history")
+            .setTitle("История транскрибаций")
             .setView(ScrollView(this).apply {
                 addView(content)
             })
-            .setPositiveButton("Close", null)
+            .setPositiveButton("Закрыть", null)
             .show()
     }
 
@@ -507,34 +521,52 @@ class MainActivity : AppCompatActivity() {
         android.app.AlertDialog.Builder(this)
             .setTitle(formatHistoryTime(entry.createdAtMs))
             .setView(ScrollView(this).apply { addView(textView) })
-            .setPositiveButton("Copy") { _, _ -> copyHistoryText(entry.text) }
-            .setNegativeButton("Close", null)
+            .setPositiveButton("Копировать") { _, _ -> copyHistoryText(entry.text) }
+            .setNegativeButton("Закрыть", null)
             .show()
     }
 
     private fun confirmClearHistory() {
         android.app.AlertDialog.Builder(this)
-            .setTitle("Clear transcription history?")
-            .setMessage("This cannot be undone.")
-            .setPositiveButton("Clear") { _, _ ->
+            .setTitle("Очистить историю транскрибаций?")
+            .setMessage("Отменить это действие будет нельзя.")
+            .setPositiveButton("Очистить") { _, _ ->
                 TranscriptionHistoryStore.clear(this)
                 refresh()
-                toast("Transcription history cleared")
+                toast("История транскрибаций очищена")
             }
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton("Отмена", null)
             .show()
     }
 
     private fun copyHistoryText(text: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("Phone Whisper transcription", text))
-        toast("Transcription copied")
+        toast("Текст скопирован")
+    }
+
+    private fun openUpdateDownload() {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UPDATE_APK_URL)))
+        } catch (_: Exception) {
+            toast("Не удалось открыть ссылку на обновление")
+        }
     }
 
     private fun formatHistoryTime(createdAtMs: Long): String {
         if (createdAtMs <= 0L) return "Saved transcription"
         return DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
             .format(Date(createdAtMs))
+    }
+
+    private fun historyEntryLabel(count: Int): String {
+        val lastTwo = count % 100
+        if (lastTwo in 11..14) return "записей"
+        return when (count % 10) {
+            1 -> "запись"
+            2, 3, 4 -> "записи"
+            else -> "записей"
+        }
     }
 
     // --- UI Helpers ---
@@ -651,6 +683,7 @@ class MainActivity : AppCompatActivity() {
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     companion object {
+        private const val UPDATE_APK_URL = "http://whisper.webuirenat.duckdns.org/phone-whisper.apk"
         private const val LP_MATCH = LinearLayout.LayoutParams.MATCH_PARENT
         private const val LP_WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
     }
