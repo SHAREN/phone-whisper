@@ -55,4 +55,13 @@ class TranscriberClientTest {
             TranscriberClient.transcriptionUrl("http://100.68.233.33:6022/v1/audio/transcriptions")
         )
     }
+
+    @Test fun `allows long cloud transcription responses`() {
+        val client = TranscriberClient.createHttpClient()
+
+        assertEquals(20_000, client.connectTimeoutMillis)
+        assertEquals(120_000, client.writeTimeoutMillis)
+        assertEquals(120_000, client.readTimeoutMillis)
+        assertEquals(150_000, client.callTimeoutMillis)
+    }
 }

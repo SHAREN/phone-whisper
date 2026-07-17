@@ -7,6 +7,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 
 object TranscriberClient {
     data class Result(
@@ -20,7 +21,17 @@ object TranscriberClient {
     private const val TRANSCRIPTIONS_PATH = "/audio/transcriptions"
     private const val TAG = "PhoneWhisper"
 
-    private val client = OkHttpClient.Builder()
+    private const val CONNECT_TIMEOUT_SECONDS = 20L
+    private const val IO_TIMEOUT_SECONDS = 120L
+    private const val CALL_TIMEOUT_SECONDS = 150L
+
+    private val client = createHttpClient()
+
+    internal fun createHttpClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(IO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(IO_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .callTimeout(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .eventListenerFactory { call ->
             TimingEventListener(call.request().tag(String::class.java) ?: "unknown")
         }

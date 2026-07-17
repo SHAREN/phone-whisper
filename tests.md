@@ -428,3 +428,32 @@ Expected results:
 
 Rollback/cleanup notes:
 - Cancel or remove the downloaded APK if installation is not required.
+
+## Long Cloud Transcription Requests
+
+Feature/change name: Wait for long cloud transcriptions and prevent overlapping duplicate submissions.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` 0.3.15-codex (17) installed.
+- Accessibility service and audio permission enabled.
+- Cloud transcription configured with the production bridge URL and token.
+- Server and Android logs available for request correlation.
+
+Step-by-step actions:
+1. Focus an editable field and record a long dictation that previously required more than 10 seconds of server processing.
+2. Stop recording and leave the transcription loader active without repeatedly tapping it.
+3. Confirm that the loader remains active for at least 30 seconds if the server has not responded yet.
+4. Tap the overlay repeatedly while it is still transcribing.
+5. Compare the Android trace ID with bridge and Nginx access logs.
+6. Repeat with a short dictation.
+
+Expected results:
+- Android waits up to 120 seconds for response data and up to 150 seconds for the complete HTTP call.
+- Repeated taps during transcription do not start another upload.
+- The bridge receives only one request for the recording while the first request remains active.
+- Long successful responses are inserted instead of changing to retry after 10 seconds.
+- A genuine failure still exposes the saved recording through the retry action.
+- Short dictations continue to complete normally without additional delay.
+
+Rollback/cleanup notes:
+- Reinstall `0.3.14-codex (16)` to restore the previous OkHttp timeout behavior.

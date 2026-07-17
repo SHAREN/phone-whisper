@@ -104,6 +104,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var pcmStream: ByteArrayOutputStream? = null
     private var retryPayload: AudioPayload? = null
     private var retryReason: String? = null
+    private val cloudTranscriptionGate = SingleFlightGate()
     private var activeTraceId: String = ""
     private var recordingStartedAtMs: Long = 0L
     private var recordingWakeLock: PowerManager.WakeLock? = null
@@ -1037,21 +1038,35 @@ class WhisperAccessibilityService : AccessibilityService() {
             return
         }
 
+        if (!cloudTranscriptionGate.tryAcquire()) {
+            trace(traceId, "api_transcribe_duplicate_blocked", "audioBytes=${payload.bytes.size} source=${payload.source}")
+            return
+        }
+
         trace(
             traceId,
             "api_transcribe_start",
             "url=${TranscriberClient.transcriptionUrl(transcriptionBaseUrl)} audioBytes=${payload.bytes.size} mime=${payload.mimeType} file=${payload.fileName} source=${payload.source} hasToken=${apiKey.isNotBlank()}"
         )
-        TranscriberClient.transcribe(payload.bytes, payload.mimeType, payload.fileName, apiKey, transcriptionBaseUrl, traceId) { result ->
-            trace(traceId, "api_transcribe_callback", "status=${result.statusCode} elapsedMs=${result.elapsedMs} hasText=${!result.text.isNullOrBlank()} error=${result.error ?: ""}")
-            if (result.text != null && result.text.isNotBlank()) {
-                handleTranscriptionResult(result.text, traceId)
-            } else {
-                handler.post {
-                    val message = ErrorMessages.transcription(result.error, result.statusCode)
-                    trace(traceId, "api_transcribe_failed_user_message", message)
-                    handleTranscriptionFailure(payload, message, traceId)
+        try {
+            TranscriberClient.transcribe(payload.bytes, payload.mimeType, payload.fileName, apiKey, transcriptionBaseUrl, traceId) { result ->
+                cloudTranscriptionGate.release()
+                trace(traceId, "api_transcribe_callback", "status=${result.statusCode} elapsedMs=${result.elapsedMs} hasText=${!result.text.isNullOrBlank()} error=${result.error ?: ""}")
+                if (result.text != null && result.text.isNotBlank()) {
+                    handleTranscriptionResult(result.text, traceId)
+                } else {
+                    handler.post {
+                        val message = ErrorMessages.transcription(result.error, result.statusCode)
+                        trace(traceId, "api_transcribe_failed_user_message", message)
+                        handleTranscriptionFailure(payload, message, traceId)
+                    }
                 }
+            }
+        } catch (e: Exception) {
+            cloudTranscriptionGate.release()
+            trace(traceId, "api_transcribe_start_failed", e.message ?: e.javaClass.simpleName)
+            handler.post {
+                handleTranscriptionFailure(payload, ErrorMessages.transcription(e.message, null), traceId)
             }
         }
     }
