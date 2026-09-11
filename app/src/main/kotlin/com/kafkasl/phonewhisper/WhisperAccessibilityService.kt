@@ -39,6 +39,7 @@ import android.widget.TextView
 import android.widget.Toast
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.RandomAccessFile
 import java.util.UUID
 import kotlin.concurrent.thread
 import kotlin.math.abs
@@ -89,6 +90,16 @@ class WhisperAccessibilityService : AccessibilityService() {
         val source: String
     )
 
+    private class CloudStreamingSession(
+        val traceId: String,
+        val file: File,
+        val upload: TranscriberClient.StreamingUpload
+    ) {
+        @Volatile var offset: Long = 0L
+        @Volatile var failed: Boolean = false
+        val pumpLock = Any()
+    }
+
     private var state = State.IDLE
     private var overlayView: FrameLayout? = null
     private var button: ImageView? = null
@@ -100,6 +111,8 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var audioRecord: AudioRecord? = null
     private var mediaRecorder: MediaRecorder? = null
     private var compressedAudioFile: File? = null
+    private var cloudStreamingSession: CloudStreamingSession? = null
+    private var streamingFallbackPayload: AudioPayload? = null
     private var recordingBackend: RecordingBackend = RecordingBackend.PCM
     private var pcmStream: ByteArrayOutputStream? = null
     private var retryPayload: AudioPayload? = null
@@ -865,6 +878,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             handler.removeCallbacks(pollCompressedAudioLevel)
             handler.post(pollCompressedAudioLevel)
             trace(traceId, "record_started", "backend=opus_ogg sampleRate=$SAMPLE_RATE channels=1 bitrate=$CLOUD_AUDIO_BITRATE file=${file.name}")
+            startCloudStreaming(file, traceId)
             true
         } catch (e: Exception) {
             trace(traceId, "compressed_record_start_failed", e.message ?: "unknown")
@@ -893,8 +907,37 @@ class WhisperAccessibilityService : AccessibilityService() {
             val payload = stopCompressedRecording(traceId, recordDurationMs)
             endRecordingSession(traceId, "recording_stopped")
             if (payload == null || payload.bytes.isEmpty()) {
+                stopCloudStreaming("no_audio")
                 reset("No audio captured")
                 return
+            }
+
+            val session = cloudStreamingSession
+            if (session != null && session.traceId == traceId) {
+                streamingFallbackPayload = payload
+                if (!session.failed) {
+                    trace(
+                        traceId,
+                        "stream_upload_finish_requested",
+                        "uploadedBytes=${session.offset} audioBytes=${payload.bytes.size}"
+                    )
+                    session.upload.finish()
+                    if (cloudStreamingSession !== session) {
+                        return
+                    }
+                    if (!session.failed) {
+                        trace(traceId, "transcription_route", "route=codex_stream_upload")
+                        return
+                    }
+                }
+
+                if (cloudStreamingSession !== session) {
+                    return
+                }
+                trace(traceId, "stream_upload_fallback", "reason=stream_failed_before_finish")
+                session.upload.cancel()
+                cloudStreamingSession = null
+                streamingFallbackPayload = null
             }
 
             transcribeApi(payload, traceId)
@@ -948,6 +991,12 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         if (file == null || !file.exists()) return null
+
+        val session = cloudStreamingSession
+        if (session != null && session.file == file && !session.failed) {
+            pumpCloudStreamingFile(session, finalPass = true)
+        }
+
         val bytes = try {
             file.readBytes()
         } catch (e: Exception) {
@@ -987,6 +1036,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         mediaRecorder?.release()
         mediaRecorder = null
+        stopCloudStreaming(reason)
         compressedAudioFile?.delete()
         compressedAudioFile = null
         pcmStream = null
@@ -997,6 +1047,128 @@ class WhisperAccessibilityService : AccessibilityService() {
         clearRetry()
         removeOverlay()
         scheduleOverlayVisibilityRefresh(0)
+    }
+
+    private fun startCloudStreaming(file: File, traceId: String) {
+        val apiKey = prefs().getString("api_key", "") ?: ""
+        val transcriptionBaseUrl = prefs().getString("transcription_base_url", "") ?: ""
+        if (transcriptionBaseUrl.isBlank()) {
+            trace(traceId, "stream_upload_skipped", "reason=blank_transcription_base_url")
+            return
+        }
+
+        val upload = TranscriberClient.startStreamingTranscription(
+            mimeType = "audio/ogg",
+            fileName = "audio.ogg",
+            apiKey = apiKey,
+            baseUrl = transcriptionBaseUrl,
+            requestId = traceId
+        ) { result ->
+            onCloudStreamingResult(traceId, result)
+        } ?: run {
+            trace(traceId, "stream_upload_skipped", "reason=client_not_started")
+            return
+        }
+
+        val session = CloudStreamingSession(traceId, file, upload)
+        cloudStreamingSession = session
+        streamingFallbackPayload = null
+        trace(
+            traceId,
+            "stream_upload_started",
+            "url=${TranscriberClient.streamingTranscriptionUrl(transcriptionBaseUrl)} file=${file.name}"
+        )
+        upload.start()
+
+        thread(name = "phone-whisper-stream-$traceId", isDaemon = true) {
+            while (state == State.RECORDING && cloudStreamingSession === session && !session.failed) {
+                pumpCloudStreamingFile(session)
+                try {
+                    Thread.sleep(COMPRESSED_LEVEL_POLL_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }
+    }
+
+    private fun pumpCloudStreamingFile(session: CloudStreamingSession, finalPass: Boolean = false) {
+        if (session.failed) return
+        synchronized(session.pumpLock) {
+            if (session.failed) return
+            val available = session.file.length()
+            if (available <= session.offset) {
+                if (finalPass) {
+                    trace(session.traceId, "stream_upload_final_pump", "uploadedBytes=${session.offset} fileBytes=$available")
+                }
+                return
+            }
+
+            try {
+                RandomAccessFile(session.file, "r").use { input ->
+                    input.seek(session.offset)
+                    val buffer = ByteArray(64 * 1024)
+                    var remaining = available - session.offset
+                    while (remaining > 0) {
+                        val n = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                        if (n <= 0) break
+                        session.upload.write(buffer, 0, n)
+                        session.offset += n
+                        remaining -= n
+                    }
+                }
+                if (finalPass) {
+                    trace(
+                        session.traceId,
+                        "stream_upload_final_pump",
+                        "uploadedBytes=${session.offset} fileBytes=${session.file.length()}"
+                    )
+                }
+            } catch (e: Exception) {
+                session.failed = true
+                session.upload.cancel()
+                trace(session.traceId, "stream_upload_pump_failed", e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
+    private fun onCloudStreamingResult(traceId: String, result: TranscriberClient.Result) {
+        val session = cloudStreamingSession
+        if (session == null || session.traceId != traceId) {
+            trace(traceId, "stream_upload_stale_callback", "status=${result.statusCode} error=${result.error ?: ""}")
+            return
+        }
+
+        trace(
+            traceId,
+            "stream_upload_callback",
+            "status=${result.statusCode} elapsedMs=${result.elapsedMs} hasText=${!result.text.isNullOrBlank()} error=${result.error ?: ""}"
+        )
+
+        if (!result.text.isNullOrBlank()) {
+            cloudStreamingSession = null
+            streamingFallbackPayload = null
+            handleTranscriptionResult(result.text, traceId)
+            return
+        }
+
+        session.failed = true
+        val fallback = streamingFallbackPayload
+        if (state == State.TRANSCRIBING && fallback != null) {
+            cloudStreamingSession = null
+            streamingFallbackPayload = null
+            trace(traceId, "stream_upload_fallback", "reason=${result.error ?: "http_${result.statusCode ?: 0}"}")
+            transcribeApi(fallback, traceId)
+        }
+    }
+
+    private fun stopCloudStreaming(reason: String) {
+        val session = cloudStreamingSession ?: return
+        session.failed = true
+        session.upload.cancel()
+        cloudStreamingSession = null
+        streamingFallbackPayload = null
+        trace(session.traceId, "stream_upload_cancelled", "reason=$reason uploadedBytes=${session.offset}")
     }
 
     private fun transcribeLocal(pcm: ByteArray, transcriber: LocalTranscriber, traceId: String) {

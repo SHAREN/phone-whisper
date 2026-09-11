@@ -457,3 +457,30 @@ Expected results:
 
 Rollback/cleanup notes:
 - Reinstall `0.3.14-codex (16)` to restore the previous OkHttp timeout behavior.
+
+## Streaming Upload Before Codex Transcription
+
+Feature/change name: Upload compressed Ogg/Opus audio to the VPS while dictation is still in progress, then use the existing single Codex/ChatGPT batch transcription request after Stop.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` 0.3.16-codex (18) installed.
+- Cloud transcription configured with the OpenWhispr Codex bridge URL and token.
+- VPS bridge exposes `/v1/audio/transcriptions/stream` and still routes the completed multipart body to the existing Codex OAuth `/backend-api/transcribe` path.
+
+Step-by-step actions:
+1. Focus an editable field and start a cloud dictation lasting at least 10 seconds.
+2. While still speaking, inspect Android/VPS trace logs and confirm the streaming request has already started before Stop.
+3. Stop dictation.
+4. Confirm the final Ogg bytes are pumped, the chunked request body closes, and the VPS starts its existing upstream Codex transcription immediately afterwards.
+5. Repeat with the streaming route unavailable or rejected.
+
+Expected results:
+- Android keeps recording the normal local Ogg/Opus file at 16 kHz mono / 24 kbit/s for fallback.
+- The growing Ogg file is tailed and sent through one chunked multipart HTTP request while recording continues.
+- Stop sends only the remaining Ogg tail before closing the multipart body; it does not re-upload the whole recording on the healthy streaming path.
+- The VPS still makes exactly one Codex/ChatGPT batch transcription request for a successful dictation.
+- The returned final text is inserted exactly once.
+- If streaming setup/upload/response fails, Android falls back to the previous whole-file `/v1/audio/transcriptions` request using the locally retained Ogg payload.
+
+Rollback/cleanup notes:
+- Reinstall `0.3.15-codex (17)` to restore post-Stop whole-file upload only.

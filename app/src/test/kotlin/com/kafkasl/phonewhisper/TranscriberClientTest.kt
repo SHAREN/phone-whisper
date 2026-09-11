@@ -64,4 +64,27 @@ class TranscriberClientTest {
         assertEquals(120_000, client.readTimeoutMillis)
         assertEquals(150_000, client.callTimeoutMillis)
     }
+
+    @Test fun `builds streaming transcription URL from bridge base URL`() {
+        assertEquals(
+            "http://100.68.233.33:6022/v1/audio/transcriptions/stream",
+            TranscriberClient.streamingTranscriptionUrl("http://100.68.233.33:6022/v1")
+        )
+    }
+
+    @Test fun `keeps explicit streaming transcription URL`() {
+        assertEquals(
+            "http://100.68.233.33:6022/v1/audio/transcriptions/stream",
+            TranscriberClient.streamingTranscriptionUrl("http://100.68.233.33:6022/v1/audio/transcriptions/stream")
+        )
+    }
+
+    @Test fun `streaming client does not expire while user is still dictating`() {
+        val client = TranscriberClient.createStreamingHttpClient()
+
+        assertEquals(20_000, client.connectTimeoutMillis)
+        assertEquals(0, client.writeTimeoutMillis)
+        assertEquals(120_000, client.readTimeoutMillis)
+        assertEquals(0, client.callTimeoutMillis)
+    }
 }
