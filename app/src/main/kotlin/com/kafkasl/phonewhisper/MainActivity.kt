@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var keyRowSub: TextView
     private lateinit var endpointRowSub: TextView
     private lateinit var historyButton: MaterialButton
+    private lateinit var diagnosticsButton: MaterialButton
     private lateinit var promptRowSub: TextView
     private lateinit var promptRow: LinearLayout
     private lateinit var modelContainer: LinearLayout
@@ -81,6 +82,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
         quickActions.addView(historyButton)
+        diagnosticsButton = MaterialButton(this).apply {
+            text = "Диагностика диктовок"
+            isAllCaps = false
+            textSize = 17f
+            setOnClickListener { showDiagnosticHistory() }
+            layoutParams = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).apply {
+                bottomMargin = dp(8)
+            }
+        }
+        quickActions.addView(diagnosticsButton)
         quickActions.addView(MaterialButton(this).apply {
             text = "Скачать обновление"
             isAllCaps = false
@@ -384,6 +395,12 @@ class MainActivity : AppCompatActivity() {
         } else {
             "История транскрибаций · ${history.size} ${historyEntryLabel(history.size)}"
         }
+        val diagnosticSessions = DiagnosticTraceStore.readSessions(this)
+        diagnosticsButton.text = if (diagnosticSessions.isEmpty()) {
+            "Диагностика диктовок"
+        } else {
+            "Диагностика диктовок · ${diagnosticSessions.size}"
+        }
 
         val prompt = currentPrompt()
         promptRowSub.text = prompt
@@ -509,6 +526,111 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Закрыть", null)
             .show()
     }
+
+    private fun showDiagnosticHistory() {
+        val sessions = DiagnosticTraceStore.readSessions(this)
+        if (sessions.isEmpty()) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Диагностика диктовок")
+                .setMessage("Технический журнал пока пуст. Он сохраняет только тайминги и ошибки — без аудио и без текста расшифровки.")
+                .setPositiveButton("Закрыть", null)
+                .show()
+            return
+        }
+
+        val content = vertical(0)
+        sessions.take(30).forEach { session ->
+            val summary = DiagnosticTraceStore.summarize(session)
+            val parts = mutableListOf<String>()
+            summary.postStopToResultMs?.let { parts += "Stop→текст ${formatDiagnosticDuration(it)}" }
+            summary.recorderStopMs?.let { parts += "MediaRecorder ${formatDiagnosticDuration(it)}" }
+            summary.finalPumpMs?.let { parts += "tail ${formatDiagnosticDuration(it)}" }
+            if (summary.fallbackUsed) parts += "fallback"
+            if (!summary.completed) parts += "незавершена"
+            val subtitle = parts.joinToString(" · ").ifBlank { "trace ${session.traceId}" }
+            content.addView(
+                settingsRow(formatHistoryTime(session.startedAtMs), subtitle) {
+                    showDiagnosticSession(session)
+                }
+            )
+        }
+        if (sessions.size > 30) {
+            content.addView(settingsRow("Показаны последние 30", "В экспорте будут все ${sessions.size} сохраненных диктовок"))
+        }
+        content.addView(
+            settingsRow("Экспортировать диагностику", "Поделиться техническим журналом без аудио и текста") {
+                shareDiagnostics(DiagnosticTraceStore.exportText(sessions))
+            }
+        )
+        content.addView(
+            settingsRow("Очистить диагностику", "Удалить сохраненные технические тайминги") {
+                confirmClearDiagnostics()
+            }
+        )
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Диагностика диктовок")
+            .setView(ScrollView(this).apply { addView(content) })
+            .setPositiveButton("Закрыть", null)
+            .show()
+    }
+
+    private fun showDiagnosticSession(session: DiagnosticTraceSession) {
+        val diagnosticText = DiagnosticTraceStore.formatSession(session)
+        val textView = TextView(this).apply {
+            text = diagnosticText
+            textSize = 14f
+            setTextColor(attrColor(android.R.attr.textColorPrimary))
+            setTextIsSelectable(true)
+            setPadding(dp(24), dp(12), dp(24), dp(12))
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Диагностика · ${session.traceId}")
+            .setView(ScrollView(this).apply { addView(textView) })
+            .setPositiveButton("Копировать") { _, _ -> copyDiagnosticText(diagnosticText) }
+            .setNeutralButton("Поделиться") { _, _ -> shareDiagnostics(diagnosticText) }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    private fun confirmClearDiagnostics() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Очистить диагностику?")
+            .setMessage("Будут удалены только технические тайминги диктовок. История расшифровок останется.")
+            .setPositiveButton("Очистить") { _, _ ->
+                DiagnosticTraceStore.clear(this)
+                refresh()
+                toast("Диагностика очищена")
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun copyDiagnosticText(text: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Phone Whisper diagnostics", text))
+        toast("Диагностика скопирована")
+    }
+
+    private fun shareDiagnostics(text: String) {
+        try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Phone Whisper diagnostics")
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(intent, "Экспорт диагностики"))
+        } catch (_: Exception) {
+            copyDiagnosticText(text)
+        }
+    }
+
+    private fun formatDiagnosticDuration(durationMs: Long): String =
+        if (durationMs >= 1000L) {
+            String.format(java.util.Locale.US, "%.2f с", durationMs / 1000.0)
+        } else {
+            "$durationMs мс"
+        }
 
     private fun showTranscriptionEntry(entry: TranscriptionHistoryEntry) {
         val textView = TextView(this).apply {

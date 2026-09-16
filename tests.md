@@ -484,3 +484,33 @@ Expected results:
 
 Rollback/cleanup notes:
 - Reinstall `0.3.15-codex (17)` to restore post-Stop whole-file upload only.
+
+## Persistent Dictation Diagnostics
+
+Feature/change name: Persistent rolling timing diagnostics for Phone Whisper dictation sessions.
+
+Prerequisites/setup:
+- `Phone Whisper Codex` 0.3.17-codex (19) installed.
+- Cloud transcription configured normally.
+
+Step-by-step actions:
+1. Perform several dictations, including one long dictation and one short dictation.
+2. Open Phone Whisper and tap `Диагностика диктовок`.
+3. Open the newest session and inspect the timeline.
+4. Confirm the session includes `record_stop_requested`, `media_recorder_stop_start/end`, `media_recorder_release_end`, `stream_upload_final_pump`, `compressed_file_read_end`, the streaming callback/result, and `inject_end` when insertion succeeds.
+5. Use `Копировать` and `Поделиться` and verify the exported text contains technical stages/timings but not transcript text or audio.
+6. Restart the Phone Whisper process and confirm previous sessions remain visible.
+7. Create more than 100 synthetic/test sessions or exercise retention tests and confirm only the newest 100 sessions within seven days are retained.
+
+Expected results:
+- Diagnostic events are persisted asynchronously in app-private storage and survive loss of `logcat` / process restart.
+- Audio and transcript text are not stored in the diagnostic journal.
+- `MediaRecorder.stop()` duration is directly visible as `media_recorder_stop_end durationMs=...`.
+- Stop-to-result and Stop-to-injection latency are summarized per session.
+- Streaming fallback use is visibly marked.
+- The journal retains at most the newest 100 sessions and seven days of events, with a size-triggered prune safeguard.
+- Clearing diagnostics does not clear transcription history.
+
+Rollback/cleanup notes:
+- `Диагностика диктовок` -> `Очистить диагностику` removes only the persistent technical journal.
+- Reinstalling 0.3.16-codex removes this diagnostics feature but leaves server-side bridge logging unchanged.

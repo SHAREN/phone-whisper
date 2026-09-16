@@ -171,6 +171,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        TranscriberClient.initializeDiagnostics(applicationContext)
         audioUiUpdateIntervalNs = resolveAudioUiUpdateIntervalNs()
         enableInteractiveWindowEvents()
         handler.removeCallbacks(pollOverlayVisibility)
@@ -979,14 +980,31 @@ class WhisperAccessibilityService : AccessibilityService() {
         mediaRecorder = null
         compressedAudioFile = null
 
+        val recorderStopStartedAt = SystemClock.elapsedRealtime()
+        trace(traceId, "media_recorder_stop_start")
+        var recorderStopOk = true
         try {
             recorder?.stop()
         } catch (e: RuntimeException) {
+            recorderStopOk = false
             trace(traceId, "compressed_record_stop_failed", e.message ?: "unknown")
         } finally {
+            trace(
+                traceId,
+                "media_recorder_stop_end",
+                "durationMs=${SystemClock.elapsedRealtime() - recorderStopStartedAt} ok=$recorderStopOk"
+            )
+            val releaseStartedAt = SystemClock.elapsedRealtime()
             try {
                 recorder?.release()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                trace(traceId, "media_recorder_release_failed", e.message ?: e.javaClass.simpleName)
+            } finally {
+                trace(
+                    traceId,
+                    "media_recorder_release_end",
+                    "durationMs=${SystemClock.elapsedRealtime() - releaseStartedAt}"
+                )
             }
         }
 
@@ -997,6 +1015,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             pumpCloudStreamingFile(session, finalPass = true)
         }
 
+        val fileReadStartedAt = SystemClock.elapsedRealtime()
         val bytes = try {
             file.readBytes()
         } catch (e: Exception) {
@@ -1005,6 +1024,11 @@ class WhisperAccessibilityService : AccessibilityService() {
         } finally {
             file.delete()
         } ?: return null
+        trace(
+            traceId,
+            "compressed_file_read_end",
+            "durationMs=${SystemClock.elapsedRealtime() - fileReadStartedAt} audioBytes=${bytes.size}"
+        )
 
         val approxBitrate = if (recordDurationMs > 0) (bytes.size * 8_000L / recordDurationMs) else 0L
         trace(
@@ -1094,12 +1118,18 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun pumpCloudStreamingFile(session: CloudStreamingSession, finalPass: Boolean = false) {
         if (session.failed) return
+        val finalPumpStartedAt = if (finalPass) SystemClock.elapsedRealtime() else 0L
         synchronized(session.pumpLock) {
             if (session.failed) return
+            val offsetBeforePump = session.offset
             val available = session.file.length()
             if (available <= session.offset) {
                 if (finalPass) {
-                    trace(session.traceId, "stream_upload_final_pump", "uploadedBytes=${session.offset} fileBytes=$available")
+                    trace(
+                        session.traceId,
+                        "stream_upload_final_pump",
+                        "durationMs=${SystemClock.elapsedRealtime() - finalPumpStartedAt} uploadedBytes=${session.offset} fileBytes=$available tailBytes=0"
+                    )
                 }
                 return
             }
@@ -1121,7 +1151,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     trace(
                         session.traceId,
                         "stream_upload_final_pump",
-                        "uploadedBytes=${session.offset} fileBytes=${session.file.length()}"
+                        "durationMs=${SystemClock.elapsedRealtime() - finalPumpStartedAt} uploadedBytes=${session.offset} fileBytes=${session.file.length()} tailBytes=${session.offset - offsetBeforePump}"
                     )
                 }
             } catch (e: Exception) {
@@ -1554,6 +1584,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun trace(traceId: String, stage: String, details: String = "") {
         Log.i(TAG, "trace=$traceId stage=$stage $details")
+        DiagnosticTraceStore.append(applicationContext, traceId, stage, details)
     }
 
     private fun prefs() = getSharedPreferences("phonewhisper", MODE_PRIVATE)

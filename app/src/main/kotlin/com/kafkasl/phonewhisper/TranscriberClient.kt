@@ -1,5 +1,6 @@
 package com.kafkasl.phonewhisper
 
+import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import okhttp3.Call
@@ -39,6 +40,11 @@ object TranscriberClient {
 
     private val client = createHttpClient()
     private val streamingClient = createStreamingHttpClient()
+    @Volatile private var diagnosticContext: Context? = null
+
+    fun initializeDiagnostics(context: Context) {
+        diagnosticContext = context.applicationContext
+    }
 
     internal fun createHttpClient(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -279,6 +285,13 @@ object TranscriberClient {
 
     private fun log(requestId: String, stage: String, message: String = "") {
         Log.i(TAG, "trace=$requestId stage=$stage $message")
+        persistDiagnostic(requestId, stage, message)
+    }
+
+    private fun persistDiagnostic(requestId: String, stage: String, message: String) {
+        diagnosticContext?.let { context ->
+            DiagnosticTraceStore.append(context, requestId, stage, message)
+        }
     }
 
     private class TimingEventListener(private val requestId: String) : EventListener() {
@@ -318,7 +331,9 @@ object TranscriberClient {
 
         private fun elapsed() = SystemClock.elapsedRealtime() - startedAt
         private fun log(stage: String, message: String = "") {
-            Log.i(TAG, "trace=$requestId stage=http_$stage $message")
+            val persistedStage = "http_$stage"
+            Log.i(TAG, "trace=$requestId stage=$persistedStage $message")
+            persistDiagnostic(requestId, persistedStage, message)
         }
     }
 }
