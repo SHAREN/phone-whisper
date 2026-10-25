@@ -19,6 +19,7 @@ import android.hardware.display.DisplayManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -226,6 +227,9 @@ class WhisperAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         info.flags = info.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            info.flags = info.flags or AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR
+        }
         serviceInfo = info
     }
 
@@ -1405,19 +1409,20 @@ class WhisperAccessibilityService : AccessibilityService() {
             trace(traceId, "clipboard_set", "chars=${text.length}")
         }
 
-        val candidates = findInjectionCandidates()
-        trace(traceId, "inject_candidates", "count=${candidates.size}")
-
-        var injected = false
-        try {
-            for (candidate in candidates) {
-                if (tryInjectIntoNode(candidate, text, allowPaste = copyToClipboard, traceId = traceId)) {
-                    injected = true
-                    break
+        var injected = tryInjectViaInputConnection(text, traceId)
+        if (!injected) {
+            val candidates = findInjectionCandidates()
+            trace(traceId, "inject_candidates", "count=${candidates.size}")
+            try {
+                for (candidate in candidates) {
+                    if (tryInjectIntoNode(candidate, text, allowPaste = copyToClipboard, traceId = traceId)) {
+                        injected = true
+                        break
+                    }
                 }
+            } finally {
+                candidates.forEach { it.recycle() }
             }
-        } finally {
-            candidates.forEach { it.recycle() }
         }
 
         val finalFeedback = feedback ?: when {
@@ -1427,6 +1432,46 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         finalFeedback?.let { showFeedback(it, feedbackDurationMs) }
         trace(traceId, "inject_end", "injected=$injected copyToClipboard=$copyToClipboard")
+    }
+
+    private fun tryInjectViaInputConnection(text: String, traceId: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            trace(traceId, "inject_input_connection", "available=false reason=api_lt_33")
+            return false
+        }
+
+        return try {
+            val inputMethod = inputMethod
+            if (inputMethod == null) {
+                trace(traceId, "inject_input_connection", "available=false reason=input_method_null")
+                false
+            } else if (!inputMethod.currentInputStarted) {
+                trace(traceId, "inject_input_connection", "available=false reason=input_not_started")
+                false
+            } else {
+                val connection = inputMethod.currentInputConnection
+                if (connection == null) {
+                    trace(traceId, "inject_input_connection", "available=false reason=connection_null")
+                    false
+                } else {
+                    val editorPackage = inputMethod.currentInputEditorInfo?.packageName.orEmpty()
+                    connection.commitText(text, 1, null)
+                    trace(
+                        traceId,
+                        "inject_input_connection",
+                        "available=true committed=true editorPackage=$editorPackage chars=${text.length}"
+                    )
+                    true
+                }
+            }
+        } catch (e: Exception) {
+            trace(
+                traceId,
+                "inject_input_connection",
+                "available=true committed=false error=${e.javaClass.simpleName}:${e.message.orEmpty()}"
+            )
+            false
+        }
     }
 
     private fun findInjectionCandidates(): List<AccessibilityNodeInfo> {
