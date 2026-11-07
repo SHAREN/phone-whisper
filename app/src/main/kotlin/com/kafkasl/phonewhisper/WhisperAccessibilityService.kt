@@ -172,6 +172,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        EndpointSecurity.migrate(prefs())
         TranscriberClient.initializeDiagnostics(applicationContext)
         audioUiUpdateIntervalNs = resolveAudioUiUpdateIntervalNs()
         enableInteractiveWindowEvents()
