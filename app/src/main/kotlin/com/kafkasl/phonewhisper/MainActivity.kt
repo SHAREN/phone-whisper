@@ -60,6 +60,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        EndpointSecurity.migrate(prefs())
 
         val root = vertical(0, 0)
 
@@ -449,10 +450,10 @@ class MainActivity : AppCompatActivity() {
         }
         android.app.AlertDialog.Builder(this)
             .setTitle("Transcription API URL")
-            .setMessage("Leave blank for official OpenAI. Use an OpenAI-compatible base URL, for example http://100.68.233.33:6022/v1")
+            .setMessage("Leave blank for official OpenAI. For the protected Whisper bridge use https://whisper.webuirenat.duckdns.org/v1")
             .setView(input.apply { setPadding(dp(24), dp(8), dp(24), dp(8)) })
             .setPositiveButton("Save") { _, _ ->
-                prefs().edit().putString("transcription_base_url", input.text.toString().trim()).apply()
+                prefs().edit().putString("transcription_base_url", EndpointSecurity.normalize(input.text.toString())).apply()
                 refresh()
             }
             .setNeutralButton("Use default") { _, _ ->

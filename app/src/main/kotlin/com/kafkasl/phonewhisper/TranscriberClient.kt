@@ -67,7 +67,7 @@ object TranscriberClient {
         .build()
 
     fun transcriptionUrl(baseUrl: String): String {
-        val base = baseUrl.trim().trimEnd('/').ifBlank { DEFAULT_BASE_URL }
+        val base = EndpointSecurity.normalize(baseUrl).trimEnd('/').ifBlank { DEFAULT_BASE_URL }
         return when {
             base.endsWith(TRANSCRIPTIONS_PATH) -> base
             base.endsWith("/v1") -> "$base$TRANSCRIPTIONS_PATH"
@@ -76,7 +76,7 @@ object TranscriberClient {
     }
 
     fun streamingTranscriptionUrl(baseUrl: String): String {
-        val base = baseUrl.trim().trimEnd('/')
+        val base = EndpointSecurity.normalize(baseUrl).trimEnd('/')
         if (base.endsWith("$TRANSCRIPTIONS_PATH/stream")) return base
         return "${transcriptionUrl(baseUrl).trimEnd('/')}/stream"
     }

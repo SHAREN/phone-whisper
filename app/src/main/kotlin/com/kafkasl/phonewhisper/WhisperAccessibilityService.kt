@@ -172,6 +172,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        EndpointSecurity.migrate(prefs())
         TranscriberClient.initializeDiagnostics(applicationContext)
         audioUiUpdateIntervalNs = resolveAudioUiUpdateIntervalNs()
         enableInteractiveWindowEvents()
@@ -1360,7 +1361,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         state = State.RETRY_READY
         scheduleOverlayVisibilityRefresh(0)
         applyVisualState()
-        showFeedback("$message. Tap retry", 3500)
+        val authFailure = message == ErrorMessages.CODEX_AUTH_UNAVAILABLE || message == ErrorMessages.BRIDGE_AUTH_INVALID
+        showFeedback(if (authFailure) message else "$message. Tap retry", if (authFailure) 6500 else 3500)
         trace(traceId, "retry_ready", "audioBytes=${payload.bytes.size} source=${payload.source} reason=$message")
     }
 
